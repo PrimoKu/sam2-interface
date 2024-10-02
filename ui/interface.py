@@ -1,4 +1,5 @@
 import os
+import cv2
 import sys
 import torch
 import numpy as np
@@ -12,59 +13,33 @@ from PyQt5.QtCore import Qt, QTimer
 from sam2_predictor import SAM2Predictor
 from visualization import show_mask, show_points, show_mask_with_contours_and_bbox
 from coco_exporter import COCOExporter
-from video_loader import load_video_frames, load_frame, navigate_frame
 from ui_utils import (create_button, create_vertical_layout, create_horizontal_layout,
                       get_object_color, CenteredCheckBox, AlignDelegate, MatplotlibWidget)
 from object_manager import ObjectManager
 
 os.environ['TORCH_CUDNN_SDPA_ENABLED'] = '1'
 
-class SAM2Interface(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.init_attributes()
-        self.initUI()
-
-    def init_attributes(self):
-        self.sam2_predictor = SAM2Predictor()
-        self.default_load_dir = os.path.abspath("../data/")
-        self.default_export_dir = os.path.abspath("../output/")
-        self.input_folder_name = None
-        self.coco_export_file = None
-        self.video_dir = None
-        self.frame_names = []
-        self.current_frame_idx = 0
-        self.current_image = None
-        self.object_manager = ObjectManager()
-        self.prompts = {}
-        self.video_segments = {}
-        self.coco_exporter = None
-        self.masks_propagated = False
-        self.first_mask_created = False
-        self.current_object_id = None
-        self.masks = {}
-        self.object_bboxes = {}
-
-    def initUI(self):
-        self.setWindowTitle('SAM2 Interface')
-        main_widget = QWidget()
-        main_layout = QHBoxLayout()
+class SAM2UI:
+    def __init__(self, interface):
+        self.interface = interface
+        self.main_widget = QWidget()
+        self.main_layout = QHBoxLayout()
+        self.left_panel = self.create_left_panel()
+        self.center_panel = self.create_center_panel()
+        self.right_panel = self.create_right_panel()
         
-        main_layout.addWidget(self.create_left_panel())
-        main_layout.addWidget(self.create_center_panel())
-        main_layout.addWidget(self.create_right_panel())
+        self.main_layout.addWidget(self.left_panel)
+        self.main_layout.addWidget(self.center_panel)
+        self.main_layout.addWidget(self.right_panel)
         
-        main_widget.setLayout(main_layout)
-        self.setCentralWidget(main_widget)
-        self.disable_all_buttons()
-        self.load_btn.setEnabled(True)
+        self.main_widget.setLayout(self.main_layout)
 
     def create_left_panel(self):
-        self.load_btn = create_button('Load Video', self.load_video_or_frames)
-        self.add_obj_btn = create_button('New Object', self.prepare_new_object)
-        self.propagate_btn = create_button('Propagate Masks', self.propagate_masks)
-        self.export_btn = create_button('Start COCO Export', self.initialize_coco_export)
-        self.reset_btn = create_button('Reset Tracking', self.reset_inference_state)
+        self.load_btn = create_button('Load Video', self.interface.load_video_or_frames)
+        self.add_obj_btn = create_button('New Object', self.interface.prepare_new_object)
+        self.propagate_btn = create_button('Propagate Masks', self.interface.propagate_masks)
+        self.export_btn = create_button('Start COCO Export', self.interface.initialize_coco_export)
+        self.reset_btn = create_button('Reset Tracking', self.interface.reset_inference_state)
         
         left_layout = create_vertical_layout(
             self.load_btn, self.add_obj_btn, self.propagate_btn, self.export_btn, self.reset_btn
@@ -80,10 +55,10 @@ class SAM2Interface(QMainWindow):
     def create_center_panel(self):
         self.mpl_widget = MatplotlibWidget()
         self.mpl_widget.setFixedSize(1600, 900)
-        self.mpl_widget.canvas.mpl_connect('button_press_event', self.on_click)
+        self.mpl_widget.canvas.mpl_connect('button_press_event', self.interface.on_click)
         
-        self.prev_btn = create_button('Prev Frame', lambda: self.navigate_frame('left'))
-        self.next_btn = create_button('Next Frame', lambda: self.navigate_frame('right'))
+        self.prev_btn = create_button('Prev Frame', lambda: self.interface.navigate_frame('left'))
+        self.next_btn = create_button('Next Frame', lambda: self.interface.navigate_frame('right'))
         nav_layout = create_horizontal_layout(self.prev_btn, self.next_btn)
         
         self.frame_info_label = QLabel()
@@ -103,7 +78,7 @@ class SAM2Interface(QMainWindow):
         self.table.setHorizontalHeaderLabels(['Re-segment', 'Category', 'Color'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setFixedWidth(250)
-        self.table.itemChanged.connect(self.on_category_name_change)
+        self.table.itemChanged.connect(self.interface.on_category_name_change)
 
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
 
@@ -136,25 +111,75 @@ class SAM2Interface(QMainWindow):
         self.add_obj_btn.setEnabled(True)
         self.prev_btn.setEnabled(True)
         self.next_btn.setEnabled(True)
-        self.reset_btn.setEnabled(True)
+
+    def update_table(self):
+        self.table.setRowCount(len(self.interface.object_manager.get_all_objects()))
+        for i, (obj_id, obj_data) in enumerate(self.interface.object_manager.get_all_objects().items()):
+            checkbox_widget = CenteredCheckBox()
+            checkbox_widget.checkbox.stateChanged.connect(lambda state, x=obj_id: self.interface.on_resegment_checked(state, x))
+            self.table.setCellWidget(i, 0, checkbox_widget)
+            
+            name_item = QTableWidgetItem(obj_data['category_name'])
+            name_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 1, name_item)
+            
+            color_item = QTableWidgetItem()
+            color_item.setBackground(QBrush(obj_data['color']))
+            self.table.setItem(i, 2, color_item)
+
+        for row in range(self.table.rowCount()):
+            self.table.setRowHeight(row, 30)
+            
+class SAM2Interface:
+    def __init__(self):
+        self.ui = SAM2UI(self)
+        self.sam2_predictor = SAM2Predictor()
+        self.object_manager = ObjectManager()
+        self.coco_exporter = None
+        self.default_load_dir = os.path.abspath("../data/")
+        self.default_export_dir = os.path.abspath("../output/")
+        self.input_folder_name = None
+        self.coco_export_file = None
+        self.video_dir = None
+        self.frame_names = []
+        self.current_frame_idx = 0
+        self.current_image = None
+        self.prompts = {}
+        self.video_segments = {}
+        self.masks_propagated = False
+        self.first_mask_created = False
+        self.current_object_id = None
+        self.masks = {}
+        self.object_bboxes = {}
+
+    def run(self):
+        self.window = QMainWindow()
+        self.window.setCentralWidget(self.ui.main_widget)
+        self.window.show()
+        self.ui.disable_all_buttons()
+        self.ui.load_btn.setEnabled(True)
 
     def load_video_or_frames(self):
         if self.video_dir:
-            reply = QMessageBox.question(self, 'Confirm Reload', 
+            reply = QMessageBox.question(self.window, 'Confirm Reload', 
                                         'Are you sure you want to load a new video? This will reset all current work.',
                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.No:
                 return
 
-        self.video_dir = QFileDialog.getExistingDirectory(self, "Select Video Directory", self.default_load_dir)
+        self.video_dir = QFileDialog.getExistingDirectory(self.window, "Select Video Directory", self.default_load_dir)
         if self.video_dir:
-            self.frame_names = load_video_frames(self.video_dir)
+            self.frame_names = [
+                f for f in os.listdir(self.video_dir) if f.endswith(('.jpg', '.jpeg', '.JPG', '.JPEG', '.png', '.PNG'))
+            ]
+            self.frame_names.sort(key=lambda f: int(os.path.splitext(f)[0]))
+
             if self.frame_names:
                 self.current_frame_idx = 0
-                self.current_image = load_frame(self.video_dir, self.frame_names[self.current_frame_idx])
+                self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
                 self.update_display(self.current_image)
 
-                progress = QProgressDialog("Initializing SAM2 Predictor...", None, 0, 0, self)
+                progress = QProgressDialog("Initializing SAM2 Predictor...", None, 0, 0, self.window)
                 progress.setWindowModality(Qt.WindowModal)
                 progress.setWindowTitle("Loading")
                 progress.setMinimumDuration(0)
@@ -168,7 +193,7 @@ class SAM2Interface(QMainWindow):
                 try:
                     self.sam2_predictor.initialize_predictor(self.video_dir, progress_callback=update_progress)
                 except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to initialize SAM2 Predictor: {str(e)}")
+                    QMessageBox.critical(self.window, "Error", f"Failed to initialize SAM2 Predictor: {str(e)}")
                     progress.close()
                     return
 
@@ -177,26 +202,32 @@ class SAM2Interface(QMainWindow):
                 print(f"Loaded video frames from {self.video_dir}")
                 self.masks_propagated = False
                 self.first_mask_created = False
-                self.enable_buttons_after_video_load()
+                self.ui.enable_buttons_after_video_load()
                 self.input_folder_name = os.path.basename(self.video_dir)
             else:
-                QMessageBox.warning(self, "Warning", "No frames found in the selected folder.")
+                QMessageBox.warning(self.window, "Warning", "No frames found in the selected folder.")
         else:
             print("No folder selected.")
 
     def update_display(self, image):
         if image is not None:
-            self.mpl_widget.clear()
-            self.mpl_widget.show_image(image)
-            self.frame_info_label.setText(f'Current Frame: {self.current_frame_idx + 1} / {len(self.frame_names)}')
+            self.ui.mpl_widget.clear()
+            self.ui.mpl_widget.show_image(image)
+            self.ui.frame_info_label.setText(f'Current Frame: {self.current_frame_idx + 1} / {len(self.frame_names)}')
 
     def navigate_frame(self, direction):
-        new_idx = navigate_frame(self.current_frame_idx, direction, len(self.frame_names))
+        new_idx = self.current_frame_idx
+
+        if direction == "left" and self.current_frame_idx > 0:
+            new_idx = self.current_frame_idx - 1
+        elif direction == "right" and self.current_frame_idx < len(self.frame_names) - 1:
+            new_idx = self.current_frame_idx + 1
+
         if new_idx != self.current_frame_idx:
             if direction == "right" and self.coco_exporter:
                 self.export_current_frame_to_coco()
             self.current_frame_idx = new_idx
-            self.current_image = load_frame(self.video_dir, self.frame_names[self.current_frame_idx])
+            self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
             self.update_display(self.current_image)
             self.prompts = {}
             if self.current_frame_idx in self.video_segments:
@@ -206,11 +237,11 @@ class SAM2Interface(QMainWindow):
                 self.redraw_all_masks()
 
     def on_click(self, event):
-        if self.current_image is None or event.inaxes != self.mpl_widget.ax:
+        if self.current_image is None or event.inaxes != self.ui.mpl_widget.ax:
             return
         
         if self.current_object_id is None:
-            QMessageBox.warning(self, "Warning", "Please select an object to edit or add a new object.")
+            QMessageBox.warning(self.window, "Warning", "Please select an object to edit or add a new object.")
             return
         
         x, y = event.xdata, event.ydata
@@ -227,12 +258,12 @@ class SAM2Interface(QMainWindow):
         
         if not self.first_mask_created:
             self.first_mask_created = True
-            self.propagate_btn.setEnabled(True)
+            self.ui.propagate_btn.setEnabled(True)
 
     def update_mask(self):
         if self.current_image is not None:
-            self.mpl_widget.clear()
-            self.mpl_widget.show_image(self.current_image)
+            self.ui.mpl_widget.clear()
+            self.ui.mpl_widget.show_image(self.current_image)
 
             if self.current_object_id is not None:
                 coords, labels = self.prompts.get(self.current_object_id, (None, None))
@@ -241,26 +272,26 @@ class SAM2Interface(QMainWindow):
                     self.masks[self.current_object_id] = mask
             
             for obj_id, mask in self.masks.items():
-                show_mask(mask, self.mpl_widget.ax, obj_id)
-                show_mask_with_contours_and_bbox(mask, self.mpl_widget.ax, obj_id)
+                show_mask(mask, self.ui.mpl_widget.ax, obj_id)
+                show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
                 self.object_manager.update_last_valid_mask(obj_id, mask)
 
             if self.current_object_id in self.prompts:
                 coords, labels = self.prompts[self.current_object_id]
-                show_points(coords, labels, self.mpl_widget.ax)
+                show_points(coords, labels, self.ui.mpl_widget.ax)
 
-            self.mpl_widget.canvas.draw()
+            self.ui.mpl_widget.canvas.draw()
 
     def propagate_masks(self):
         if not self.video_dir:
-            QMessageBox.warning(self, "Warning", "Please load a video first.")
+            QMessageBox.warning(self.window, "Warning", "Please load a video first.")
             return
 
         if not self.object_manager.get_all_objects():
-            QMessageBox.warning(self, "Warning", "Please add at least one object before propagating masks.")
+            QMessageBox.warning(self.window, "Warning", "Please add at least one object before propagating masks.")
             return
 
-        progress = QProgressDialog("Propagating masks...", None, 0, 0, self)
+        progress = QProgressDialog("Propagating masks...", None, 0, 0, self.window)
         progress.setWindowModality(Qt.WindowModal)
         progress.setWindowTitle("Processing")
         progress.setMinimumDuration(0)
@@ -274,7 +305,7 @@ class SAM2Interface(QMainWindow):
         try:
             self.video_segments = self.sam2_predictor.propagate_masks(progress_callback=update_progress)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred during mask propagation: {str(e)}")
+            QMessageBox.critical(self.window, "Error", f"An error occurred during mask propagation: {str(e)}")
             progress.close()
             return
 
@@ -282,24 +313,25 @@ class SAM2Interface(QMainWindow):
 
         print("Propagation completed across all frames.")
         self.masks_propagated = True
-        self.export_btn.setEnabled(True)
-        self.add_obj_btn.setEnabled(False)
-        QMessageBox.information(self, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
+        self.ui.export_btn.setEnabled(True)
+        self.ui.reset_btn.setEnabled(True)
+        self.ui.add_obj_btn.setEnabled(False)
+        QMessageBox.information(self.window, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
 
     def display_propagated_masks(self):
-        self.mpl_widget.clear()
-        self.mpl_widget.show_image(self.current_image)
+        self.ui.mpl_widget.clear()
+        self.ui.mpl_widget.show_image(self.current_image)
         
         if self.current_frame_idx in self.video_segments:
             for out_obj_id, out_mask in self.video_segments[self.current_frame_idx].items():
                 self.masks[out_obj_id] = out_mask
-                show_mask(out_mask, self.mpl_widget.ax, out_obj_id)
-                bbox = show_mask_with_contours_and_bbox(out_mask, self.mpl_widget.ax, out_obj_id)
+                show_mask(out_mask, self.ui.mpl_widget.ax, out_obj_id)
+                bbox = show_mask_with_contours_and_bbox(out_mask, self.ui.mpl_widget.ax, out_obj_id)
                 if self.current_frame_idx not in self.object_bboxes:
                     self.object_bboxes[self.current_frame_idx] = {}
                 self.object_bboxes[self.current_frame_idx][out_obj_id] = bbox
         
-        self.mpl_widget.canvas.draw()
+        self.ui.mpl_widget.canvas.draw()
 
     def on_category_name_change(self, item):
         if item.column() == 1:  # Category name column
@@ -308,14 +340,15 @@ class SAM2Interface(QMainWindow):
             self.object_manager.update_category_name(obj_id, new_name)
             print(f"Category {obj_id} renamed to: {new_name}")
 
-    def on_object_selected(self, state, obj_id):
+    def on_resegment_checked(self, state, obj_id):
         if state == Qt.Checked:
-            for i in range(self.table.rowCount()):
-                if self.table.cellWidget(i, 0) != self.sender():
-                    self.table.cellWidget(i, 0).setChecked(False)
+            for row in range(self.ui.table.rowCount()):
+                checkbox_widget = self.ui.table.cellWidget(row, 0)
+                if checkbox_widget.isChecked() and list(self.object_manager.get_all_objects().keys())[row] != obj_id:
+                    checkbox_widget.setChecked(False)
             
             self.current_object_id = obj_id
-            QMessageBox.information(self, "Object Selected", f"You can now edit Object {obj_id}")
+            QMessageBox.information(self.window, "Object Selected", f"You can now edit Object {obj_id}")
         else:
             self.current_object_id = None
 
@@ -324,60 +357,21 @@ class SAM2Interface(QMainWindow):
         category_name = f"Object {new_obj_id}"
         color = get_object_color(new_obj_id)
         self.object_manager.add_object(new_obj_id, category_name, color)
-        self.update_table()
-        self.current_object_id = new_obj_id
-        print(f"Prepared new object with ID {new_obj_id}")
-        
-    def add_new_object(self):
-        new_obj_id = max(self.object_manager.get_all_objects().keys(), default=-1) + 1
-        category_name = f"Object {new_obj_id}"
-        color = get_object_color(new_obj_id)
-        self.object_manager.add_object(new_obj_id, category_name, color)
-        self.update_table()
+        self.ui.update_table()
         self.current_object_id = new_obj_id
         print(f"Prepared new object with ID {new_obj_id}")
 
-    def update_table(self):
-        self.table.setRowCount(len(self.object_manager.get_all_objects()))
-        for i, (obj_id, obj_data) in enumerate(self.object_manager.get_all_objects().items()):
-            checkbox_widget = CenteredCheckBox()
-            checkbox_widget.checkbox.stateChanged.connect(lambda state, x=obj_id: self.on_resegment_checked(state, x))
-            self.table.setCellWidget(i, 0, checkbox_widget)
-            
-            name_item = QTableWidgetItem(obj_data['category_name'])
-            name_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(i, 1, name_item)
-            
-            color_item = QTableWidgetItem()
-            color_item.setBackground(QBrush(obj_data['color']))
-            self.table.setItem(i, 2, color_item)
-
-        for row in range(self.table.rowCount()):
-            self.table.setRowHeight(row, 30)
-
-    def on_resegment_checked(self, state, obj_id):
-        if state == Qt.Checked:
-            for row in range(self.table.rowCount()):
-                checkbox_widget = self.table.cellWidget(row, 0)
-                if checkbox_widget.isChecked() and list(self.object_manager.get_all_objects().keys())[row] != obj_id:
-                    checkbox_widget.setChecked(False)
-            
-            self.current_object_id = obj_id
-            QMessageBox.information(self, "Object Selected", f"You can now edit Object {obj_id}")
-        else:
-            self.current_object_id = None
-            
     def initialize_coco_export(self):
         if not self.video_dir:
-            QMessageBox.warning(self, "Warning", "Please load a video first.")
+            QMessageBox.warning(self.window, "Warning", "Please load a video first.")
             return
 
         if not self.masks_propagated:
-            QMessageBox.warning(self, "Warning", "Please propagate masks before starting COCO export.")
+            QMessageBox.warning(self.window, "Warning", "Please propagate masks before starting COCO export.")
             return
 
         if self.input_folder_name is None:
-            QMessageBox.warning(self, "Warning", "Input folder name not recorded. Please reload the video.")
+            QMessageBox.warning(self.window, "Warning", "Input folder name not recorded. Please reload the video.")
             return
 
         if self.coco_export_file == None:
@@ -389,7 +383,7 @@ class SAM2Interface(QMainWindow):
 
         use_existing = False
         if os.path.exists(self.coco_export_file):
-            reply = QMessageBox.question(self, 'File Exists', 
+            reply = QMessageBox.question(self.window, 'File Exists', 
                                          'An export file already exists. Do you want to update it?',
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
@@ -405,7 +399,7 @@ class SAM2Interface(QMainWindow):
         categories = [{"id": obj_id, "name": obj_data['category_name']} 
                       for obj_id, obj_data in self.object_manager.get_all_objects().items()]
         self.coco_exporter.initialize_categories(categories)
-        QMessageBox.information(self, "COCO Export", f"COCO export initialized. Data will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
+        QMessageBox.information(self.window, "COCO Export", f"COCO export initialized. Data will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
 
     def export_current_frame_to_coco(self):
         if self.coco_exporter is None:
@@ -435,16 +429,15 @@ class SAM2Interface(QMainWindow):
         self.reinitialize_masks(current_masks)
         
         self.update_display(self.current_image)
-        self.update_table()
+        self.ui.update_table()
 
         self.redraw_all_masks()
         
-        self.export_btn.setEnabled(False)
-        self.reset_btn.setEnabled(False)
-        self.add_obj_btn.setEnabled(True)
+        self.ui.export_btn.setEnabled(False)
+        self.ui.reset_btn.setEnabled(False)
+        self.ui.add_obj_btn.setEnabled(True)
 
-        QMessageBox.information(self, "Reset Complete", "Inference state has been reset. Existing masks are preserved. You can now edit objects or add new ones.")
-
+        QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset. Existing masks are preserved. You can now edit objects or add new ones.")
 
     def reinitialize_masks(self, current_masks):
         for obj_id, mask in current_masks.items():
@@ -455,16 +448,15 @@ class SAM2Interface(QMainWindow):
             else:
                 self.masks[obj_id] = mask.cpu().numpy() if torch.is_tensor(mask) else mask
 
-
     def redraw_all_masks(self):
-        self.mpl_widget.clear()
-        self.mpl_widget.show_image(self.current_image)
+        self.ui.mpl_widget.clear()
+        self.ui.mpl_widget.show_image(self.current_image)
         
         for obj_id, mask in self.masks.items():
-            show_mask(mask, self.mpl_widget.ax, obj_id)
-            show_mask_with_contours_and_bbox(mask, self.mpl_widget.ax, obj_id)
+            show_mask(mask, self.ui.mpl_widget.ax, obj_id)
+            show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
         
-        self.mpl_widget.canvas.draw()
+        self.ui.mpl_widget.canvas.draw()
 
     def create_mask(self, frame_idx, obj_id, coords, labels):
         out_mask_logits = self.sam2_predictor.generate_mask_with_points(frame_idx, obj_id, coords, labels)
@@ -482,11 +474,11 @@ class SAM2Interface(QMainWindow):
             new_coords = np.append(coords, [[x, y]], axis=0)
             new_labels = np.append(labels, [click_type_val])
             self.prompts[object_id] = (new_coords, new_labels)
-    
+
 def run_interface():
     app = QApplication(sys.argv)
-    ex = SAM2Interface()
-    ex.show()
+    interface = SAM2Interface()
+    interface.run()
     sys.exit(app.exec_())
 
 if __name__ == '__main__':
