@@ -1,18 +1,19 @@
 import os
 import sys
+import torch
 import numpy as np
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QFileDialog, 
                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView, 
                              QScrollArea, QMessageBox, QVBoxLayout, QHBoxLayout,
-                             QCheckBox)
+                             QProgressDialog)
 from PyQt5.QtGui import QBrush
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from sam2_predictor import SAM2Predictor
 from visualization import show_mask, show_points, show_mask_with_contours_and_bbox
 from coco_exporter import COCOExporter
 from video_loader import load_video_frames, load_frame, navigate_frame
-from mask_operations import create_mask, update_click_prompts, propagate_masks
+from mask_operations import create_mask, update_click_prompts
 from ui_utils import (create_button, create_vertical_layout, create_horizontal_layout,
                       get_object_color, CenteredCheckBox, AlignDelegate, MatplotlibWidget)
 from object_manager import ObjectManager
@@ -43,6 +44,7 @@ class SAM2Interface(QMainWindow):
         self.first_mask_created = False
         self.current_object_id = None
         self.masks = {}
+        self.object_bboxes = {}
 
     def initUI(self):
         self.setWindowTitle('SAM2 Interface')
@@ -138,6 +140,13 @@ class SAM2Interface(QMainWindow):
         self.reset_btn.setEnabled(True)
 
     def load_video_or_frames(self):
+        if self.video_dir:
+            reply = QMessageBox.question(self, 'Confirm Reload', 
+                                        'Are you sure you want to load a new video? This will reset all current work.',
+                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+
         self.video_dir = QFileDialog.getExistingDirectory(self, "Select Video Directory", self.default_load_dir)
         if self.video_dir:
             self.frame_names = load_video_frames(self.video_dir)
@@ -145,15 +154,34 @@ class SAM2Interface(QMainWindow):
                 self.current_frame_idx = 0
                 self.current_image = load_frame(self.video_dir, self.frame_names[self.current_frame_idx])
                 self.update_display(self.current_image)
-                self.sam2_predictor.initialize_predictor(self.video_dir)
+
+                progress = QProgressDialog("Initializing SAM2 Predictor...", None, 0, 0, self)
+                progress.setWindowModality(Qt.WindowModal)
+                progress.setWindowTitle("Loading")
+                progress.setMinimumDuration(0)
+                progress.setValue(0)
+                progress.show()
+
+                def update_progress(status):
+                    progress.setLabelText(status)
+                    QApplication.processEvents()
+
+                try:
+                    self.sam2_predictor.initialize_predictor(self.video_dir, progress_callback=update_progress)
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to initialize SAM2 Predictor: {str(e)}")
+                    progress.close()
+                    return
+
+                progress.close()
+
                 print(f"Loaded video frames from {self.video_dir}")
                 self.masks_propagated = False
                 self.first_mask_created = False
                 self.enable_buttons_after_video_load()
-                
                 self.input_folder_name = os.path.basename(self.video_dir)
             else:
-                print("No frames found in the folder.")
+                QMessageBox.warning(self, "Warning", "No frames found in the selected folder.")
         else:
             print("No folder selected.")
 
@@ -233,10 +261,30 @@ class SAM2Interface(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please add at least one object before propagating masks.")
             return
 
-        self.video_segments = propagate_masks(self.sam2_predictor)
+        progress = QProgressDialog("Propagating masks...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowTitle("Processing")
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+
+        def update_progress(frame_idx):
+            progress.setLabelText(f"Propagating masks... (Frame {frame_idx + 1})")
+            QApplication.processEvents()
+
+        try:
+            self.video_segments = self.sam2_predictor.propagate_masks(progress_callback=update_progress)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred during mask propagation: {str(e)}")
+            progress.close()
+            return
+
+        progress.close()
+
         print("Propagation completed across all frames.")
         self.masks_propagated = True
         self.export_btn.setEnabled(True)
+        self.add_obj_btn.setEnabled(False)
         QMessageBox.information(self, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
 
     def display_propagated_masks(self):
@@ -247,7 +295,10 @@ class SAM2Interface(QMainWindow):
             for out_obj_id, out_mask in self.video_segments[self.current_frame_idx].items():
                 self.masks[out_obj_id] = out_mask
                 show_mask(out_mask, self.mpl_widget.ax, out_obj_id)
-                show_mask_with_contours_and_bbox(out_mask, self.mpl_widget.ax, out_obj_id)
+                bbox = show_mask_with_contours_and_bbox(out_mask, self.mpl_widget.ax, out_obj_id)
+                if self.current_frame_idx not in self.object_bboxes:
+                    self.object_bboxes[self.current_frame_idx] = {}
+                self.object_bboxes[self.current_frame_idx][out_obj_id] = bbox
         
         self.mpl_widget.canvas.draw()
 
@@ -377,30 +428,32 @@ class SAM2Interface(QMainWindow):
 
     def reset_inference_state(self):
         current_masks = self.masks.copy()
-        current_prompts = self.prompts.copy()
 
         self.sam2_predictor.reset_state()
         self.video_segments = {}
         self.masks_propagated = False
         
-        self.reinitialize_masks(current_masks, current_prompts)
+        self.reinitialize_masks(current_masks)
         
         self.update_display(self.current_image)
         self.update_table()
 
         self.redraw_all_masks()
         
+        self.export_btn.setEnabled(False)
+        self.add_obj_btn.setEnabled(True)
+
         QMessageBox.information(self, "Reset Complete", "Inference state has been reset. Existing masks are preserved. You can now edit objects or add new ones.")
 
-    def reinitialize_masks(self, current_masks, current_prompts):
+
+    def reinitialize_masks(self, current_masks):
         for obj_id, mask in current_masks.items():
-            coords, labels = current_prompts.get(obj_id, (None, None))
-            if coords is not None and labels is not None:
-                new_mask = self.sam2_predictor.generate_mask_with_points(self.current_frame_idx, obj_id, coords, labels)
+            bbox = self.object_bboxes.get(self.current_frame_idx, {}).get(obj_id)
+            if bbox is not None:
+                new_mask = self.sam2_predictor.generate_mask_with_box(self.current_frame_idx, obj_id, bbox)
                 self.masks[obj_id] = new_mask
-                self.prompts[obj_id] = (coords, labels)
             else:
-                self.masks[obj_id] = mask
+                self.masks[obj_id] = mask.cpu().numpy() if torch.is_tensor(mask) else mask
 
 
     def redraw_all_masks(self):

@@ -6,11 +6,13 @@ class SAM2Predictor:
         self.predictor = None
         self.inference_state = None
 
-    def initialize_predictor(self, video_dir):
+    def initialize_predictor(self, video_dir, progress_callback=None):
         sam2_checkpoint = "../external/sam2/checkpoints/sam2.1_hiera_large.pt"
         model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
         
-        ## select the device for computation
+        if progress_callback:
+            progress_callback("Selecting computation device...")
+
         if torch.cuda.is_available():
             device = torch.device("cuda")
         elif torch.backends.mps.is_available():
@@ -31,19 +33,29 @@ class SAM2Predictor:
                 "See e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
             )
         
-        # Build the predictor
+        if progress_callback:
+            progress_callback("Building SAM2 predictor...")
+
         self.predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
         
+        if progress_callback:
+            progress_callback("Initializing inference state...")
+
         self.inference_state = self.predictor.init_state(video_path=video_dir)
         self.predictor.reset_state(self.inference_state)
+        
+        if progress_callback:
+            progress_callback("Initialization complete.")
 
-    def propagate_masks(self):
+    def propagate_masks(self, progress_callback=None):
         video_segments = {}
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(self.inference_state):
+        for i, (out_frame_idx, out_obj_ids, out_mask_logits) in enumerate(self.predictor.propagate_in_video(self.inference_state)):
             video_segments[out_frame_idx] = {
                 out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
                 for i, out_obj_id in enumerate(out_obj_ids)
             }
+            if progress_callback:
+                progress_callback(out_frame_idx)
         return video_segments
 
     def generate_mask_with_points(self, frame_idx, obj_id, coords, labels):
@@ -63,7 +75,7 @@ class SAM2Predictor:
             obj_id=obj_id,
             box=box
         )
-        return out_mask_logits
+        return (out_mask_logits[obj_id] > 0.0).cpu().numpy()
     
     def reset_state(self):
         self.predictor.reset_state(self.inference_state)

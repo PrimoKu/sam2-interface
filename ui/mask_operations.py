@@ -26,6 +26,3 @@ def update_box_prompts(prompts, object_id, x_min, y_min, x_max, y_max):
         new_coords = np.append(box_coords, [[x_min, y_min, x_max, y_max]], axis=0)
         prompts[object_id] = new_coords
     return prompts
-
-def propagate_masks(sam_predictor):
-    return sam_predictor.propagate_masks()
