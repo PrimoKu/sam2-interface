@@ -159,6 +159,8 @@ class SAM2Interface:
         self.ui.disable_all_buttons()
         self.ui.load_btn.setEnabled(True)
 
+    # Video and Frame Management
+    # --------------------------
     def load_video_or_frames(self):
         if self.video_dir:
             reply = QMessageBox.question(self.window, 'Confirm Reload', 
@@ -209,12 +211,6 @@ class SAM2Interface:
         else:
             print("No folder selected.")
 
-    def update_display(self, image):
-        if image is not None:
-            self.ui.mpl_widget.clear()
-            self.ui.mpl_widget.show_image(image)
-            self.ui.frame_info_label.setText(f'Current Frame: {self.current_frame_idx + 1} / {len(self.frame_names)}')
-
     def navigate_frame(self, direction):
         new_idx = self.current_frame_idx
 
@@ -235,7 +231,17 @@ class SAM2Interface:
             else:
                 self.masks.clear()
                 self.redraw_all_masks()
+    
+    # Display Update
+    # --------------
+    def update_display(self, image):
+        if image is not None:
+            self.ui.mpl_widget.clear()
+            self.ui.mpl_widget.show_image(image)
+            self.ui.frame_info_label.setText(f'Current Frame: {self.current_frame_idx + 1} / {len(self.frame_names)}')
 
+    # Mask Creation and Management
+    # ----------------------------
     def on_click(self, event):
         if self.current_image is None or event.inaxes != self.ui.mpl_widget.ax:
             return
@@ -282,6 +288,35 @@ class SAM2Interface:
 
             self.ui.mpl_widget.canvas.draw()
 
+    def create_mask(self, frame_idx, obj_id, coords, labels):
+        out_mask_logits = self.sam2_predictor.generate_mask_with_points(frame_idx, obj_id, coords, labels)
+        
+        if len(out_mask_logits) > 0:
+            return (out_mask_logits[obj_id] > 0.0).cpu().numpy()
+        else:
+            return np.zeros((self.sam2_predictor.inference_state['height'], self.sam2_predictor.inference_state['width']), dtype=bool)
+
+    def update_click_prompts(self, object_id, x, y, click_type_val):
+        if object_id not in self.prompts:
+            self.prompts[object_id] = (np.array([[x, y]]), np.array([click_type_val]))
+        else:
+            coords, labels = self.prompts[object_id]
+            new_coords = np.append(coords, [[x, y]], axis=0)
+            new_labels = np.append(labels, [click_type_val])
+            self.prompts[object_id] = (new_coords, new_labels)
+    
+    def redraw_all_masks(self):
+        self.ui.mpl_widget.clear()
+        self.ui.mpl_widget.show_image(self.current_image)
+        
+        for obj_id, mask in self.masks.items():
+            show_mask(mask, self.ui.mpl_widget.ax, obj_id)
+            show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
+        
+        self.ui.mpl_widget.canvas.draw()
+
+    # Mask Propagation
+    # ----------------
     def propagate_masks(self):
         if not self.video_dir:
             QMessageBox.warning(self.window, "Warning", "Please load a video first.")
@@ -333,6 +368,17 @@ class SAM2Interface:
         
         self.ui.mpl_widget.canvas.draw()
 
+    # Object Management
+    # -----------------
+    def prepare_new_object(self):
+        new_obj_id = max(self.object_manager.get_all_objects().keys(), default=-1) + 1
+        category_name = f"Object {new_obj_id}"
+        color = get_object_color(new_obj_id)
+        self.object_manager.add_object(new_obj_id, category_name, color)
+        self.ui.update_table()
+        self.current_object_id = new_obj_id
+        print(f"Prepared new object with ID {new_obj_id}")
+
     def on_category_name_change(self, item):
         if item.column() == 1:  # Category name column
             new_name = item.text()
@@ -352,15 +398,8 @@ class SAM2Interface:
         else:
             self.current_object_id = None
 
-    def prepare_new_object(self):
-        new_obj_id = max(self.object_manager.get_all_objects().keys(), default=-1) + 1
-        category_name = f"Object {new_obj_id}"
-        color = get_object_color(new_obj_id)
-        self.object_manager.add_object(new_obj_id, category_name, color)
-        self.ui.update_table()
-        self.current_object_id = new_obj_id
-        print(f"Prepared new object with ID {new_obj_id}")
-
+    # COCO Export
+    # -----------
     def initialize_coco_export(self):
         if not self.video_dir:
             QMessageBox.warning(self.window, "Warning", "Please load a video first.")
@@ -399,7 +438,7 @@ class SAM2Interface:
         categories = [{"id": obj_id, "name": obj_data['category_name']} 
                       for obj_id, obj_data in self.object_manager.get_all_objects().items()]
         self.coco_exporter.initialize_categories(categories)
-        QMessageBox.information(self.window, "COCO Export", f"COCO export initialized. Data will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
+        QMessageBox.information(self.window, "COCO Export", f"COCO export initialized.\nData will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
 
     def export_current_frame_to_coco(self):
         if self.coco_exporter is None:
@@ -419,6 +458,8 @@ class SAM2Interface:
         self.coco_exporter.update_file()
         print(f"Exported COCO data for frame {self.current_frame_idx + 1}")
 
+    # State Management
+    # ----------------
     def reset_inference_state(self):
         current_masks = self.masks.copy()
 
@@ -437,7 +478,7 @@ class SAM2Interface:
         self.ui.reset_btn.setEnabled(False)
         self.ui.add_obj_btn.setEnabled(True)
 
-        QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset. Existing masks are preserved. You can now edit objects or add new ones.")
+        QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset.\nExisting masks are preserved. You can now edit objects or add new ones.")
 
     def reinitialize_masks(self, current_masks):
         for obj_id, mask in current_masks.items():
@@ -447,33 +488,6 @@ class SAM2Interface:
                 self.masks[obj_id] = new_mask
             else:
                 self.masks[obj_id] = mask.cpu().numpy() if torch.is_tensor(mask) else mask
-
-    def redraw_all_masks(self):
-        self.ui.mpl_widget.clear()
-        self.ui.mpl_widget.show_image(self.current_image)
-        
-        for obj_id, mask in self.masks.items():
-            show_mask(mask, self.ui.mpl_widget.ax, obj_id)
-            show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
-        
-        self.ui.mpl_widget.canvas.draw()
-
-    def create_mask(self, frame_idx, obj_id, coords, labels):
-        out_mask_logits = self.sam2_predictor.generate_mask_with_points(frame_idx, obj_id, coords, labels)
-        
-        if len(out_mask_logits) > 0:
-            return (out_mask_logits[obj_id] > 0.0).cpu().numpy()
-        else:
-            return np.zeros((self.sam2_predictor.inference_state['height'], self.sam2_predictor.inference_state['width']), dtype=bool)
-
-    def update_click_prompts(self, object_id, x, y, click_type_val):
-        if object_id not in self.prompts:
-            self.prompts[object_id] = (np.array([[x, y]]), np.array([click_type_val]))
-        else:
-            coords, labels = self.prompts[object_id]
-            new_coords = np.append(coords, [[x, y]], axis=0)
-            new_labels = np.append(labels, [click_type_val])
-            self.prompts[object_id] = (new_coords, new_labels)
 
 def run_interface():
     app = QApplication(sys.argv)
