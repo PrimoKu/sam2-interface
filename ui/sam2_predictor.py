@@ -46,7 +46,7 @@ class SAM2Predictor:
             }
         return video_segments
 
-    def generate_mask(self, frame_idx, obj_id, coords, labels):
+    def generate_mask_with_points(self, frame_idx, obj_id, coords, labels):
         _, _, out_mask_logits = self.predictor.add_new_points_or_box(
             inference_state=self.inference_state,
             frame_idx=frame_idx,
@@ -54,4 +54,16 @@ class SAM2Predictor:
             points=coords,
             labels=labels,
         )
-        return (out_mask_logits[obj_id] > 0.0).cpu().numpy()
+        return out_mask_logits
+    
+    def generate_mask_with_box(self, frame_idx, obj_id, box):
+        _, _, out_mask_logits = self.predictor.add_new_points_or_box(
+            inference_state=self.inference_state,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            box=box
+        )
+        return out_mask_logits
+    
+    def reset_state(self):
+        self.predictor.reset_state(self.inference_state)
