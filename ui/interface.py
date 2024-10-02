@@ -417,7 +417,7 @@ class SAM2Interface:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.coco_export_file = os.path.join(
                 self.default_export_dir,
-                f"coco_export_{self.input_folder_name}_{timestamp}.json"
+                f"{self.input_folder_name}_{timestamp}.json"
             )
 
         use_existing = False
@@ -431,7 +431,7 @@ class SAM2Interface:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 self.coco_export_file = os.path.join(
                     self.default_export_dir,
-                    f"coco_export_{self.input_folder_name}_{timestamp}.json"
+                    f"{self.input_folder_name}_{timestamp}.json"
                 )
 
         self.coco_exporter = COCOExporter(self.coco_export_file, use_existing)
