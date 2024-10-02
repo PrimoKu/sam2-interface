@@ -13,7 +13,6 @@ from sam2_predictor import SAM2Predictor
 from visualization import show_mask, show_points, show_mask_with_contours_and_bbox
 from coco_exporter import COCOExporter
 from video_loader import load_video_frames, load_frame, navigate_frame
-from mask_operations import create_mask, update_click_prompts
 from ui_utils import (create_button, create_vertical_layout, create_horizontal_layout,
                       get_object_color, CenteredCheckBox, AlignDelegate, MatplotlibWidget)
 from object_manager import ObjectManager
@@ -223,7 +222,7 @@ class SAM2Interface(QMainWindow):
         else:
             return
         
-        self.prompts = update_click_prompts(self.prompts, self.current_object_id, x, y, click_type_val)
+        self.update_click_prompts(self.current_object_id, x, y, click_type_val)
         self.update_mask()
         
         if not self.first_mask_created:
@@ -235,10 +234,10 @@ class SAM2Interface(QMainWindow):
             self.mpl_widget.clear()
             self.mpl_widget.show_image(self.current_image)
 
-            if self.current_object_id is not None and self.current_object_id in self.prompts:
-                coords, labels = self.prompts[self.current_object_id]
-                if len(coords) > 0:
-                    mask = create_mask(self.sam2_predictor, self.current_frame_idx, self.current_object_id, coords, labels)
+            if self.current_object_id is not None:
+                coords, labels = self.prompts.get(self.current_object_id, (None, None))
+                if coords is not None and len(coords) > 0:
+                    mask = self.create_mask(self.current_frame_idx, self.current_object_id, coords, labels)
                     self.masks[self.current_object_id] = mask
             
             for obj_id, mask in self.masks.items():
@@ -441,6 +440,7 @@ class SAM2Interface(QMainWindow):
         self.redraw_all_masks()
         
         self.export_btn.setEnabled(False)
+        self.reset_btn.setEnabled(False)
         self.add_obj_btn.setEnabled(True)
 
         QMessageBox.information(self, "Reset Complete", "Inference state has been reset. Existing masks are preserved. You can now edit objects or add new ones.")
@@ -466,6 +466,23 @@ class SAM2Interface(QMainWindow):
         
         self.mpl_widget.canvas.draw()
 
+    def create_mask(self, frame_idx, obj_id, coords, labels):
+        out_mask_logits = self.sam2_predictor.generate_mask_with_points(frame_idx, obj_id, coords, labels)
+        
+        if len(out_mask_logits) > 0:
+            return (out_mask_logits[obj_id] > 0.0).cpu().numpy()
+        else:
+            return np.zeros((self.sam2_predictor.inference_state['height'], self.sam2_predictor.inference_state['width']), dtype=bool)
+
+    def update_click_prompts(self, object_id, x, y, click_type_val):
+        if object_id not in self.prompts:
+            self.prompts[object_id] = (np.array([[x, y]]), np.array([click_type_val]))
+        else:
+            coords, labels = self.prompts[object_id]
+            new_coords = np.append(coords, [[x, y]], axis=0)
+            new_labels = np.append(labels, [click_type_val])
+            self.prompts[object_id] = (new_coords, new_labels)
+    
 def run_interface():
     app = QApplication(sys.argv)
     ex = SAM2Interface()
