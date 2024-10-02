@@ -1,6 +1,7 @@
 import os
 import sys
 import numpy as np
+from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QFileDialog, 
                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView, 
                              QScrollArea, QMessageBox, QVBoxLayout, QHBoxLayout,
@@ -28,6 +29,8 @@ class SAM2Interface(QMainWindow):
         self.sam2_predictor = SAM2Predictor()
         self.default_load_dir = os.path.abspath("../data/")
         self.default_export_dir = os.path.abspath("../output/")
+        self.input_folder_name = None
+        self.coco_export_file = None
         self.video_dir = None
         self.frame_names = []
         self.current_frame_idx = 0
@@ -147,6 +150,8 @@ class SAM2Interface(QMainWindow):
                 self.masks_propagated = False
                 self.first_mask_created = False
                 self.enable_buttons_after_video_load()
+                
+                self.input_folder_name = os.path.basename(self.video_dir)
             else:
                 print("No frames found in the folder.")
         else:
@@ -185,10 +190,8 @@ class SAM2Interface(QMainWindow):
         
         if event.button == 1:
             click_type_val = 1
-            click_type_str = "positive"
         elif event.button == 3:
             click_type_val = 0
-            click_type_str = "negative"
         else:
             return
         
@@ -323,18 +326,36 @@ class SAM2Interface(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please propagate masks before starting COCO export.")
             return
 
-        default_filename = "coco_export.json"
-        output_file, _ = QFileDialog.getSaveFileName(
-            self, "Save COCO JSON", 
-            os.path.join(self.default_export_dir, default_filename), 
-            "JSON Files (*.json)"
-        )
-        if output_file:
-            self.coco_exporter = COCOExporter(output_file)
-            categories = [{"id": obj_id, "name": obj_data['category_name']} 
-                          for obj_id, obj_data in self.object_manager.get_all_objects().items()]
-            self.coco_exporter.initialize_categories(categories)
-            QMessageBox.information(self, "COCO Export", "COCO export initialized. Data will be written as you navigate through frames.")
+        if self.input_folder_name is None:
+            QMessageBox.warning(self, "Warning", "Input folder name not recorded. Please reload the video.")
+            return
+
+        if self.coco_export_file == None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.coco_export_file = os.path.join(
+                self.default_export_dir,
+                f"coco_export_{self.input_folder_name}_{timestamp}.json"
+            )
+
+        use_existing = False
+        if os.path.exists(self.coco_export_file):
+            reply = QMessageBox.question(self, 'File Exists', 
+                                         'An export file already exists. Do you want to update it?',
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                use_existing = True
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.coco_export_file = os.path.join(
+                    self.default_export_dir,
+                    f"coco_export_{self.input_folder_name}_{timestamp}.json"
+                )
+
+        self.coco_exporter = COCOExporter(self.coco_export_file, use_existing)
+        categories = [{"id": obj_id, "name": obj_data['category_name']} 
+                      for obj_id, obj_data in self.object_manager.get_all_objects().items()]
+        self.coco_exporter.initialize_categories(categories)
+        QMessageBox.information(self, "COCO Export", f"COCO export initialized. Data will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
 
     def export_current_frame_to_coco(self):
         if self.coco_exporter is None:
