@@ -64,7 +64,7 @@ class MatplotlibWidget(QWidget):
         self.ax = self.figure.add_subplot(111)
         self.ax.set_position([0, 0, 1, 1])  # Make axes occupy the entire figure
         self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-        self.setFixedSize(1600, 900)  # Set fixed size for the widget
+        self.setMinimumSize(1600, 900)  # Set fixed size for the widget
 
     def clear(self):
         self.ax.clear()
@@ -79,8 +79,7 @@ class MatplotlibWidget(QWidget):
         self.canvas.draw()
 
     def resizeEvent(self, event):
-        # Maintain 16:9 ratio
-        width = event.size().width()
-        height = int(width * 9 / 16)
-        self.setFixedSize(width, height)
+        width = max(event.size().width(), 1600)
+        height = max(int(width * 9 / 16), 900)
+        self.setMinimumSize(width, height)
         super().resizeEvent(event)

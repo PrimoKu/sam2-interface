@@ -49,13 +49,20 @@ class SAM2Predictor:
 
     def propagate_masks(self, start_frame_idx=0, max_frame_num_to_track=None, progress_callback=None):
         video_segments = {}
-        for i, (out_frame_idx, out_obj_ids, out_mask_logits) in enumerate(self.predictor.propagate_in_video(self.inference_state, start_frame_idx=start_frame_idx, max_frame_num_to_track=max_frame_num_to_track)):
+        frame_count = 0
+        
+        for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(self.inference_state, start_frame_idx=start_frame_idx, max_frame_num_to_track=max_frame_num_to_track):
             video_segments[out_frame_idx] = {
                 out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
                 for i, out_obj_id in enumerate(out_obj_ids)
             }
             if progress_callback:
-                progress_callback(out_frame_idx)
+                progress_callback(frame_count)
+            
+            frame_count += 1
+            if max_frame_num_to_track is not None and frame_count >= max_frame_num_to_track:
+                break
+
         return video_segments
 
     def generate_mask_with_points(self, frame_idx, obj_id, coords, labels):

@@ -8,7 +8,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QFileDialog, 
                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView, 
                              QScrollArea, QMessageBox, QVBoxLayout, QHBoxLayout,
-                             QProgressDialog)
+                             QProgressDialog, QPushButton)
 from PyQt5.QtGui import QBrush
 from PyQt5.QtCore import Qt, QTimer
 from sam2_predictor import SAM2Predictor
@@ -39,9 +39,9 @@ class SAM2UI:
         self.load_btn = create_button('Load Video', self.interface.load_video_or_frames)
         self.load_coco_btn = create_button('Load COCO JSON', self.interface.load_coco_and_propagate)
         self.add_obj_btn = create_button('New Object', self.interface.prepare_new_object)
-        self.propagate_btn = create_button('Propagate Masks', self.interface.propagate_masks)
+        self.propagate_btn = create_button('Propagate Masks', lambda: self.interface.propagate_masks(type=None))
         self.export_btn = create_button('Start COCO Export', self.interface.initialize_coco_export)
-        self.reset_btn = create_button('Reset Tracking', self.interface.reset_inference_state)
+        self.reset_btn = create_button('Reset Tracking', lambda: self.interface.reset_inference_state(type=None))
         
         left_layout = create_vertical_layout(
             self.load_btn, self.load_coco_btn, self.add_obj_btn, self.propagate_btn, self.export_btn, self.reset_btn
@@ -76,10 +76,10 @@ class SAM2UI:
         return center_widget
 
     def create_right_panel(self):
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['Re-segment', 'Category', 'Color'])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(['Re-segment', 'Category', 'Color', 'Delete'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setFixedWidth(250)
+        self.table.setFixedWidth(300)
         self.table.itemChanged.connect(self.interface.on_category_name_change)
 
         self.table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
@@ -91,7 +91,7 @@ class SAM2UI:
         scroll = QScrollArea()
         scroll.setWidget(self.table)
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(270) 
+        scroll.setFixedWidth(320) 
 
         right_layout = QVBoxLayout()
         right_layout.addWidget(scroll)
@@ -129,9 +129,19 @@ class SAM2UI:
             color_item.setBackground(QBrush(obj_data['color']))
             self.table.setItem(i, 2, color_item)
 
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda _, x=obj_id: self.interface.delete_object(x))
+            self.table.setCellWidget(i, 3, delete_btn)
+
         for row in range(self.table.rowCount()):
             self.table.setRowHeight(row, 30)
-            
+
+    def set_delete_buttons_enabled(self, enabled):
+        for row in range(self.table.rowCount()):
+            delete_btn = self.table.cellWidget(row, 3)
+            if isinstance(delete_btn, QPushButton):
+                delete_btn.setEnabled(enabled)
+
 class SAM2Interface:
     def __init__(self):
         self.ui = SAM2UI(self)
@@ -208,6 +218,7 @@ class SAM2Interface:
                 self.masks_propagated = False
                 self.first_mask_created = False
                 self.ui.enable_buttons_after_video_load()
+                self.ui.set_delete_buttons_enabled(True)
                 self.input_folder_name = os.path.basename(self.video_dir)
 
                 self.ui.load_coco_btn.setEnabled(True)
@@ -229,13 +240,14 @@ class SAM2Interface:
                 self.export_current_frame_to_coco()
             self.current_frame_idx = new_idx
             self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
-            self.update_display(self.current_image)
             self.prompts = {}
+            
             if self.current_frame_idx in self.video_segments:
-                self.display_propagated_masks()
+                self.masks.update(self.video_segments[self.current_frame_idx])
             else:
                 self.masks.clear()
-                self.redraw_all_masks()
+            
+            self.update_display(self.current_image)
     
     # Display Update
     # --------------
@@ -244,6 +256,19 @@ class SAM2Interface:
             self.ui.mpl_widget.clear()
             self.ui.mpl_widget.show_image(image)
             self.ui.frame_info_label.setText(f'Current Frame: {self.current_frame_idx + 1} / {len(self.frame_names)}')
+
+            if self.current_frame_idx in self.video_segments:
+                self.masks.update(self.video_segments[self.current_frame_idx])
+
+            for obj_id, mask in self.masks.items():
+                if obj_id in self.object_manager.get_all_objects():
+                    show_mask(mask, self.ui.mpl_widget.ax, obj_id)
+                    bbox = show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
+                    if self.current_frame_idx not in self.object_bboxes:
+                        self.object_bboxes[self.current_frame_idx] = {}
+                    self.object_bboxes[self.current_frame_idx][obj_id] = bbox
+
+            self.ui.mpl_widget.canvas.draw()
 
     # Mask Creation and Management
     # ----------------------------
@@ -309,16 +334,6 @@ class SAM2Interface:
             new_coords = np.append(coords, [[x, y]], axis=0)
             new_labels = np.append(labels, [click_type_val])
             self.prompts[object_id] = (new_coords, new_labels)
-    
-    def redraw_all_masks(self):
-        self.ui.mpl_widget.clear()
-        self.ui.mpl_widget.show_image(self.current_image)
-        
-        for obj_id, mask in self.masks.items():
-            show_mask(mask, self.ui.mpl_widget.ax, obj_id)
-            show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
-        
-        self.ui.mpl_widget.canvas.draw()
 
     # Mask Propagation
     # ----------------
@@ -331,15 +346,21 @@ class SAM2Interface:
             QMessageBox.warning(self.window, "Warning", "Please add at least one object before propagating masks.")
             return
 
-        progress = QProgressDialog("Propagating masks...", None, 0, 0, self.window)
+        progress = QProgressDialog("Propagating masks...", None, 0, 100, self.window)
         progress.setWindowModality(Qt.WindowModal)
         progress.setWindowTitle("Processing")
         progress.setMinimumDuration(0)
         progress.setValue(0)
         progress.show()
 
-        def update_progress(frame_idx):
-            progress.setLabelText(f"Propagating masks... (Frame {frame_idx + 1})")
+        total_frames = len(self.frame_names)
+        end_frame = total_frames if max_frame_num_to_track is None else min(self.current_frame_idx + max_frame_num_to_track, total_frames)
+
+        def update_progress(frame_count):
+            current_frame = self.current_frame_idx + frame_count + 1
+            progress.setLabelText(f"Propagating masks... (Frame {current_frame} / {end_frame})")
+            progress_value = int((frame_count + 1) / (end_frame - self.current_frame_idx) * 90)
+            progress.setValue(min(progress_value, 90))
             QApplication.processEvents()
 
         try:
@@ -356,13 +377,20 @@ class SAM2Interface:
         progress.close()
 
         print(f"Propagation completed from frame {self.current_frame_idx + 1} to the end.")
+
+        progress.setValue(95)
         self.masks_propagated = True
         self.ui.export_btn.setEnabled(True)
         self.ui.reset_btn.setEnabled(True)
         self.ui.add_obj_btn.setEnabled(False)
         self.ui.propagate_btn.setEnabled(False)
-        
-        if type == None:
+        self.ui.load_coco_btn.setEnabled(False)
+        self.ui.set_delete_buttons_enabled(False)
+
+        progress.setValue(100)
+        progress.close()
+
+        if type is None:
             QMessageBox.information(self.window, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
 
     def display_propagated_masks(self):
@@ -409,6 +437,21 @@ class SAM2Interface:
             QMessageBox.information(self.window, "Object Selected", f"You can now edit Object {obj_id}")
         else:
             self.current_object_id = None
+
+    def delete_object(self, obj_id):
+        self.object_manager.remove_object(obj_id)
+        if obj_id in self.masks:
+            del self.masks[obj_id]
+        for frame in self.object_bboxes:
+            if obj_id in self.object_bboxes[frame]:
+                del self.object_bboxes[frame][obj_id]
+        # Remove the object from video_segments
+        for frame in self.video_segments:
+            if obj_id in self.video_segments[frame]:
+                del self.video_segments[frame][obj_id]
+                
+        self.update_display(self.current_image)
+        self.ui.update_table()
 
     # COCO Export
     # -----------
@@ -468,7 +511,8 @@ class SAM2Interface:
 
         if self.current_frame_idx in self.video_segments:
             for obj_id, mask in self.video_segments[self.current_frame_idx].items():
-                self.coco_exporter.add_annotation(image_id, obj_id, mask)
+                if obj_id in self.object_manager.get_all_objects():
+                    self.coco_exporter.add_annotation(image_id, obj_id, mask)
 
         self.coco_exporter.update_file()
         print(f"Exported COCO data for frame {self.current_frame_idx + 1}")
@@ -500,7 +544,6 @@ class SAM2Interface:
         self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
 
         self.generate_masks_from_annotations(coco_data)
-        self.update_display(self.current_image)
         self.propagate_masks(type='LOAD', max_frame_num_to_track=3)
         self.navigate_frame("right")
         self.reset_inference_state(type='LOAD')
@@ -547,27 +590,25 @@ class SAM2Interface:
     # State Management
     # ----------------
     def reset_inference_state(self, type=None):
-        current_masks = self.masks.copy()
 
+        current_masks = self.masks.copy()
         self.sam2_predictor.reset_state()
         self.video_segments = {}
         self.masks_propagated = False
-        
         self.reinitialize_masks(current_masks)
-        
         self.update_display(self.current_image)
         self.ui.update_table()
-
-        self.redraw_all_masks()
         
         self.ui.export_btn.setEnabled(False)
         self.ui.reset_btn.setEnabled(False)
         self.ui.add_obj_btn.setEnabled(True)
         self.ui.propagate_btn.setEnabled(True)
+        self.ui.load_coco_btn.setEnabled(True)
+        self.ui.set_delete_buttons_enabled(True)
 
-        if type == None:
+        if type is None:
             QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset.\nExisting masks are preserved. You can now edit objects or add new ones.")
-
+            
     def reinitialize_masks(self, current_masks):
         for obj_id, mask in current_masks.items():
             bbox = self.object_bboxes.get(self.current_frame_idx, {}).get(obj_id)

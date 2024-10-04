@@ -23,5 +23,9 @@ class ObjectManager:
         if obj_id in self.objects:
             self.objects[obj_id]['category_name'] = new_name
 
+    def remove_object(self, obj_id):
+        if obj_id in self.objects:
+            del self.objects[obj_id]
+
     def clear(self):
         self.objects.clear()
