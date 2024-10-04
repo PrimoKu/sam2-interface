@@ -31,7 +31,7 @@ def create_horizontal_layout(*items):
     return layout
 
 def get_object_color(obj_id):
-    return QColor(*[int(c * 255) for c in plt.cm.tab10(obj_id % 10)[:3]])
+    return QColor(*[int(c * 255) for c in plt.cm.tab20(obj_id % 20)[:3]])
 
 class CenteredCheckBox(QWidget):
     def __init__(self, parent=None):
@@ -62,13 +62,25 @@ class MatplotlibWidget(QWidget):
         layout = create_vertical_layout(self.canvas)
         self.setLayout(layout)
         self.ax = self.figure.add_subplot(111)
-        self.figure.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
-        self.figure.tight_layout()
+        self.ax.set_position([0, 0, 1, 1])  # Make axes occupy the entire figure
+        self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+        self.setFixedSize(1600, 900)  # Set fixed size for the widget
 
     def clear(self):
         self.ax.clear()
+        self.ax.set_axis_off()
         self.canvas.draw()
 
     def show_image(self, image):
+        self.clear()
         self.ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        self.ax.set_xlim(0, image.shape[1])
+        self.ax.set_ylim(image.shape[0], 0)  # Invert y-axis for correct image orientation
         self.canvas.draw()
+
+    def resizeEvent(self, event):
+        # Maintain 16:9 ratio
+        width = event.size().width()
+        height = int(width * 9 / 16)
+        self.setFixedSize(width, height)
+        super().resizeEvent(event)

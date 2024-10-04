@@ -1,6 +1,7 @@
 import os
 import cv2
 import sys
+import json
 import torch
 import numpy as np
 from datetime import datetime
@@ -36,13 +37,14 @@ class SAM2UI:
 
     def create_left_panel(self):
         self.load_btn = create_button('Load Video', self.interface.load_video_or_frames)
+        self.load_coco_btn = create_button('Load COCO JSON', self.interface.load_coco_and_propagate)
         self.add_obj_btn = create_button('New Object', self.interface.prepare_new_object)
         self.propagate_btn = create_button('Propagate Masks', self.interface.propagate_masks)
         self.export_btn = create_button('Start COCO Export', self.interface.initialize_coco_export)
         self.reset_btn = create_button('Reset Tracking', self.interface.reset_inference_state)
         
         left_layout = create_vertical_layout(
-            self.load_btn, self.add_obj_btn, self.propagate_btn, self.export_btn, self.reset_btn
+            self.load_btn, self.load_coco_btn, self.add_obj_btn, self.propagate_btn, self.export_btn, self.reset_btn
         )
         
         left_layout.addStretch(1)
@@ -158,6 +160,7 @@ class SAM2Interface:
         self.window.show()
         self.ui.disable_all_buttons()
         self.ui.load_btn.setEnabled(True)
+        self.ui.load_coco_btn.setEnabled(False)
 
     # Video and Frame Management
     # --------------------------
@@ -206,6 +209,8 @@ class SAM2Interface:
                 self.first_mask_created = False
                 self.ui.enable_buttons_after_video_load()
                 self.input_folder_name = os.path.basename(self.video_dir)
+
+                self.ui.load_coco_btn.setEnabled(True)
             else:
                 QMessageBox.warning(self.window, "Warning", "No frames found in the selected folder.")
         else:
@@ -317,7 +322,7 @@ class SAM2Interface:
 
     # Mask Propagation
     # ----------------
-    def propagate_masks(self):
+    def propagate_masks(self, type=None, max_frame_num_to_track=None):
         if not self.video_dir:
             QMessageBox.warning(self.window, "Warning", "Please load a video first.")
             return
@@ -338,7 +343,11 @@ class SAM2Interface:
             QApplication.processEvents()
 
         try:
-            self.video_segments = self.sam2_predictor.propagate_masks(progress_callback=update_progress)
+            self.video_segments = self.sam2_predictor.propagate_masks(
+                start_frame_idx=self.current_frame_idx,
+                max_frame_num_to_track=max_frame_num_to_track,
+                progress_callback=update_progress
+            )
         except Exception as e:
             QMessageBox.critical(self.window, "Error", f"An error occurred during mask propagation: {str(e)}")
             progress.close()
@@ -346,12 +355,15 @@ class SAM2Interface:
 
         progress.close()
 
-        print("Propagation completed across all frames.")
+        print(f"Propagation completed from frame {self.current_frame_idx + 1} to the end.")
         self.masks_propagated = True
         self.ui.export_btn.setEnabled(True)
         self.ui.reset_btn.setEnabled(True)
         self.ui.add_obj_btn.setEnabled(False)
-        QMessageBox.information(self.window, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
+        self.ui.propagate_btn.setEnabled(False)
+        
+        if type == None:
+            QMessageBox.information(self.window, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
 
     def display_propagated_masks(self):
         self.ui.mpl_widget.clear()
@@ -413,31 +425,34 @@ class SAM2Interface:
             QMessageBox.warning(self.window, "Warning", "Input folder name not recorded. Please reload the video.")
             return
 
-        if self.coco_export_file == None:
+        if self.coco_export_file and os.path.exists(self.coco_export_file):
+            default_file = self.coco_export_file
+        else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.coco_export_file = os.path.join(
+            default_file = os.path.join(
                 self.default_export_dir,
                 f"{self.input_folder_name}_{timestamp}.json"
             )
 
-        use_existing = False
-        if os.path.exists(self.coco_export_file):
-            reply = QMessageBox.question(self.window, 'File Exists', 
-                                         'An export file already exists. Do you want to update it?',
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                use_existing = True
-            else:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self.coco_export_file = os.path.join(
-                    self.default_export_dir,
-                    f"{self.input_folder_name}_{timestamp}.json"
-                )
+        reply = QMessageBox.question(self.window, 'COCO Export',
+                                     f'Do you want to use the file:\n{default_file}\nfor export?',
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+
+        if reply == QMessageBox.No:
+            self.coco_export_file = QFileDialog.getSaveFileName(self.window, "Save COCO JSON File", 
+                                                                default_file, "JSON files (*.json)")[0]
+            if not self.coco_export_file:
+                return
+        else:
+            self.coco_export_file = default_file
+
+        use_existing = os.path.exists(self.coco_export_file)
 
         self.coco_exporter = COCOExporter(self.coco_export_file, use_existing)
         categories = [{"id": obj_id, "name": obj_data['category_name']} 
                       for obj_id, obj_data in self.object_manager.get_all_objects().items()]
         self.coco_exporter.initialize_categories(categories)
+        self.ui.export_btn.setEnabled(False)
         QMessageBox.information(self.window, "COCO Export", f"COCO export initialized.\nData will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
 
     def export_current_frame_to_coco(self):
@@ -458,9 +473,80 @@ class SAM2Interface:
         self.coco_exporter.update_file()
         print(f"Exported COCO data for frame {self.current_frame_idx + 1}")
 
+    # COCO Loading
+    # ----------------
+    def load_coco_and_propagate(self):
+        if not self.video_dir:
+            QMessageBox.warning(self.window, "Warning", "Please load a video first.")
+            return
+
+        coco_file = QFileDialog.getOpenFileName(self.window, "Select COCO JSON File", self.default_export_dir, "JSON files (*.json)")[0]
+        if not coco_file:
+            return
+
+        self.coco_export_file = coco_file
+
+        coco_data = self.load_coco_data(coco_file)
+        if not coco_data:
+            QMessageBox.warning(self.window, "Error", "Failed to load COCO data.")
+            return
+
+        last_frame = self.get_last_annotated_frame(coco_data)
+        if last_frame is None:
+            QMessageBox.warning(self.window, "Error", "No valid annotations found.")
+            return
+
+        self.current_frame_idx = last_frame
+        self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
+
+        self.generate_masks_from_annotations(coco_data)
+        self.update_display(self.current_image)
+        self.propagate_masks(type='LOAD', max_frame_num_to_track=3)
+        self.navigate_frame("right")
+        self.reset_inference_state(type='LOAD')
+
+        QMessageBox.information(self.window, "COCO Loading Complete", "COCO data loaded and masks are regenerated.\nMake sure the masks are correct before propagation.")
+
+    def load_coco_data(self, coco_file):
+        try:
+            with open(coco_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading COCO data: {str(e)}")
+            return None
+
+    def get_last_annotated_frame(self, coco_data):
+        images = sorted(coco_data['images'], key=lambda x: x['id'], reverse=True)
+        for image in images:
+            if any(ann['image_id'] == image['id'] for ann in coco_data['annotations']):
+                return image['id']
+        return None
+    
+    def generate_masks_from_annotations(self, coco_data):
+        self.object_manager.clear()
+        self.masks.clear()
+        self.object_bboxes.clear()
+
+        last_frame_annotations = [ann for ann in coco_data['annotations'] if ann['image_id'] == self.current_frame_idx]
+        for annotation in last_frame_annotations:
+            obj_id = annotation['category_id']
+            bbox = annotation['bbox']  # [x, y, width, height]
+            category_name = next((cat['name'] for cat in coco_data['categories'] if cat['id'] == obj_id), f"Object {obj_id}")
+            
+            box = [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]
+            
+            mask = self.sam2_predictor.generate_mask_with_box(self.current_frame_idx, obj_id, box)
+            self.masks[obj_id] = mask
+            self.object_bboxes[self.current_frame_idx] = {obj_id: box}
+            
+            color = get_object_color(obj_id)
+            self.object_manager.add_object(obj_id, category_name, color)
+
+        self.ui.update_table()
+
     # State Management
     # ----------------
-    def reset_inference_state(self):
+    def reset_inference_state(self, type=None):
         current_masks = self.masks.copy()
 
         self.sam2_predictor.reset_state()
@@ -477,8 +563,10 @@ class SAM2Interface:
         self.ui.export_btn.setEnabled(False)
         self.ui.reset_btn.setEnabled(False)
         self.ui.add_obj_btn.setEnabled(True)
+        self.ui.propagate_btn.setEnabled(True)
 
-        QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset.\nExisting masks are preserved. You can now edit objects or add new ones.")
+        if type == None:
+            QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset.\nExisting masks are preserved. You can now edit objects or add new ones.")
 
     def reinitialize_masks(self, current_masks):
         for obj_id, mask in current_masks.items():
