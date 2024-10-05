@@ -42,10 +42,12 @@ class SAM2UI:
         self.propagate_btn = create_button('Propagate Masks', lambda: self.interface.propagate_masks(type=None))
         self.export_btn = create_button('Start COCO Export', self.interface.initialize_coco_export)
         self.reset_btn = create_button('Reset Tracking', lambda: self.interface.reset_inference_state(type=None))
-        
+        self.propagate_and_export_btn = create_button('Propagate and Export All', self.interface.propagate_and_export_all)
+    
         left_layout = create_vertical_layout(
-            self.load_btn, self.load_coco_btn, self.add_obj_btn, self.propagate_btn, self.export_btn, self.reset_btn
-        )
+            self.load_btn, self.load_coco_btn, self.add_obj_btn, self.propagate_btn, 
+            self.export_btn, self.reset_btn, self.propagate_and_export_btn
+    )
         
         left_layout.addStretch(1)
         
@@ -108,6 +110,7 @@ class SAM2UI:
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.reset_btn.setEnabled(False)
+        self.propagate_and_export_btn.setEnabled(False)
 
     def enable_buttons_after_video_load(self):
         self.add_obj_btn.setEnabled(True)
@@ -296,6 +299,7 @@ class SAM2Interface:
         if not self.first_mask_created:
             self.first_mask_created = True
             self.ui.propagate_btn.setEnabled(True)
+            self.ui.propagate_and_export_btn.setEnabled(True)
 
     def update_mask(self):
         if self.current_image is not None:
@@ -515,6 +519,78 @@ class SAM2Interface:
         self.coco_exporter.update_file()
         print(f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}")
 
+    def propagate_and_export_all(self):
+        if not self.video_dir:
+            QMessageBox.warning(self.window, "Warning", "Please load a video first.")
+            return
+
+        if not self.object_manager.get_all_objects():
+            QMessageBox.warning(self.window, "Warning", "Please add at least one object before propagating masks.")
+            return
+
+        total_frames = len(self.frame_names)
+        progress = QProgressDialog("Processing frames...", "Cancel", 0, total_frames * 2, self.window)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowTitle("Propagating and Exporting")
+        progress.show()
+
+        def update_propagation_progress(frame_count):
+            progress.setValue(frame_count)
+            progress.setLabelText(f"Propagating masks: {frame_count}/{total_frames}")
+            QApplication.processEvents()
+
+        self.video_segments = self.sam2_predictor.propagate_masks(
+            start_frame_idx=0,
+            max_frame_num_to_track=None,
+            progress_callback=update_propagation_progress
+        )
+
+        if progress.wasCanceled():
+            return
+
+        self.masks_propagated = True
+
+        progress.setLabelText("Initializing COCO export...")
+        QApplication.processEvents()
+
+        if not self.coco_exporter:
+            self.initialize_coco_export()
+        if not self.coco_exporter:
+            progress.close()
+            return 
+
+        for frame_idx in range(total_frames):
+            if progress.wasCanceled():
+                break
+
+            progress.setValue(total_frames + frame_idx)
+            progress.setLabelText(f"Exporting COCO data: {frame_idx + 1}/{total_frames}")
+            QApplication.processEvents()
+
+            image_id = self.coco_exporter.add_image(
+                frame_number=frame_idx,
+                file_name=self.frame_names[frame_idx],
+                width=self.current_image.shape[1],
+                height=self.current_image.shape[0]
+            )
+
+            if frame_idx in self.video_segments:
+                for obj_id, mask in self.video_segments[frame_idx].items():
+                    if obj_id in self.object_manager.get_all_objects():
+                        self.coco_exporter.add_annotation(image_id, obj_id + 1, mask)
+
+        self.coco_exporter.update_file()
+        progress.close()
+
+        QMessageBox.information(self.window, "Export Complete", "Mask propagation and COCO export completed for all frames.")
+
+        self.ui.export_btn.setEnabled(False)
+        self.ui.reset_btn.setEnabled(True)
+        self.ui.add_obj_btn.setEnabled(False)
+        self.ui.propagate_btn.setEnabled(False)
+        self.ui.load_coco_btn.setEnabled(False)
+        self.ui.set_delete_buttons_enabled(False)
+
     # COCO Loading
     # ----------------
     def load_coco_and_propagate(self):
@@ -605,6 +681,7 @@ class SAM2Interface:
         self.ui.propagate_btn.setEnabled(True)
         self.ui.load_coco_btn.setEnabled(True)
         self.ui.set_delete_buttons_enabled(True)
+        self.ui.propagate_and_export_btn.setEnabled(True)
 
         if type is None:
             QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset.\nExisting masks are preserved. You can now edit objects or add new ones.")
