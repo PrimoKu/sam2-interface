@@ -263,7 +263,8 @@ class SAM2Interface:
             for obj_id, mask in self.masks.items():
                 if obj_id in self.object_manager.get_all_objects():
                     show_mask(mask, self.ui.mpl_widget.ax, obj_id)
-                    bbox = show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
+                    category_name = self.object_manager.get_object(obj_id)['category_name']
+                    bbox = show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id, category_name)
                     if self.current_frame_idx not in self.object_bboxes:
                         self.object_bboxes[self.current_frame_idx] = {}
                     self.object_bboxes[self.current_frame_idx][obj_id] = bbox
@@ -309,7 +310,8 @@ class SAM2Interface:
             
             for obj_id, mask in self.masks.items():
                 show_mask(mask, self.ui.mpl_widget.ax, obj_id)
-                show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id)
+                category_name = self.object_manager.get_object(obj_id)['category_name']
+                show_mask_with_contours_and_bbox(mask, self.ui.mpl_widget.ax, obj_id, category_name)
                 self.object_manager.update_last_valid_mask(obj_id, mask)
 
             if self.current_object_id in self.prompts:
@@ -392,21 +394,6 @@ class SAM2Interface:
 
         if type is None:
             QMessageBox.information(self.window, "Propagation Complete", "Mask propagation is complete. You can now start COCO export.")
-
-    def display_propagated_masks(self):
-        self.ui.mpl_widget.clear()
-        self.ui.mpl_widget.show_image(self.current_image)
-        
-        if self.current_frame_idx in self.video_segments:
-            for out_obj_id, out_mask in self.video_segments[self.current_frame_idx].items():
-                self.masks[out_obj_id] = out_mask
-                show_mask(out_mask, self.ui.mpl_widget.ax, out_obj_id)
-                bbox = show_mask_with_contours_and_bbox(out_mask, self.ui.mpl_widget.ax, out_obj_id)
-                if self.current_frame_idx not in self.object_bboxes:
-                    self.object_bboxes[self.current_frame_idx] = {}
-                self.object_bboxes[self.current_frame_idx][out_obj_id] = bbox
-        
-        self.ui.mpl_widget.canvas.draw()
 
     # Object Management
     # -----------------

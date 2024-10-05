@@ -26,7 +26,7 @@ def show_points(coords, labels, ax, marker_size=200):
     if len(neg_points) > 0:
         ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
 
-def show_mask_with_contours_and_bbox(mask, ax, obj_id=None, random_color=False):
+def show_mask_with_contours_and_bbox(mask, ax, obj_id=None, category_name=None, random_color=False):
     if len(mask.shape) > 2:
         mask = mask.squeeze()
     mask_binary = (mask > 0).astype(np.uint8) * 255
@@ -40,4 +40,8 @@ def show_mask_with_contours_and_bbox(mask, ax, obj_id=None, random_color=False):
     rect = plt.Rectangle((x, y), w, h, linewidth=2, edgecolor='red', facecolor='none')
     ax.add_patch(rect)
     
+    if category_name:
+        ax.text(x, y - 5, category_name, color='white', fontweight='bold', 
+                bbox=dict(facecolor='red', edgecolor='none', alpha=0.7, pad=0.5))
+        
     return [x, y, x+w, y+h]
