@@ -551,7 +551,7 @@ class SAM2Interface:
             QMessageBox.warning(self.window, "Error", "No valid annotations found.")
             return
 
-        self.current_frame_idx = last_frame
+        self.current_frame_idx = last_frame - 1
         self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
 
         self.generate_masks_from_annotations(coco_data)
@@ -581,11 +581,13 @@ class SAM2Interface:
         self.masks.clear()
         self.object_bboxes.clear()
 
-        last_frame_annotations = [ann for ann in coco_data['annotations'] if ann['image_id'] == self.current_frame_idx]
+        last_frame_annotations = [ann for ann in coco_data['annotations'] if ann['image_id'] == self.current_frame_idx + 1]
+
         for annotation in last_frame_annotations:
-            obj_id = annotation['category_id']
+            category_id = annotation['category_id']
+            obj_id = annotation['category_id'] - 1
             bbox = annotation['bbox']  # [x, y, width, height]
-            category_name = next((cat['name'] for cat in coco_data['categories'] if cat['id'] == obj_id), f"Object {obj_id}")
+            category_name = next((cat['name'] for cat in coco_data['categories'] if cat['id'] == category_id), f"Object {category_id}")
             
             box = [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]
             
