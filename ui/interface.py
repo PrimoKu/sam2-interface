@@ -236,7 +236,7 @@ class SAM2Interface:
             new_idx = self.current_frame_idx + 1
 
         if new_idx != self.current_frame_idx:
-            if direction == "right" and self.coco_exporter:
+            if self.coco_exporter:
                 self.export_current_frame_to_coco()
             self.current_frame_idx = new_idx
             self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
@@ -468,18 +468,24 @@ class SAM2Interface:
             QMessageBox.warning(self.window, "Warning", "Input folder name not recorded. Please reload the video.")
             return
 
+        reply = None
+
         if self.coco_export_file and os.path.exists(self.coco_export_file):
             default_file = self.coco_export_file
+            reply = QMessageBox.question(self.window, 'COCO Export',
+                f"The file '{default_file}' already exists. Do you want to use this file for export?\n"
+                "If you choose 'Yes', the existing file will be updated.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             default_file = os.path.join(
                 self.default_export_dir,
                 f"{self.input_folder_name}_{timestamp}.json"
             )
+            reply = QMessageBox.question(self.window, 'COCO Export',
+                f"A new file will be created for export:\n'{default_file}'\nDo you want to proceed with this file?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
 
-        reply = QMessageBox.question(self.window, 'COCO Export',
-                                     f'Do you want to use the file:\n{default_file}\nfor export?',
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
 
         if reply == QMessageBox.No:
             self.coco_export_file = QFileDialog.getSaveFileName(self.window, "Save COCO JSON File", 
@@ -509,13 +515,18 @@ class SAM2Interface:
             height=self.current_image.shape[0]
         )
 
+        self.coco_exporter.coco_data['annotations'] = [
+            ann for ann in self.coco_exporter.coco_data['annotations'] 
+            if ann['image_id'] != image_id
+        ]
+
         if self.current_frame_idx in self.video_segments:
             for obj_id, mask in self.video_segments[self.current_frame_idx].items():
                 if obj_id in self.object_manager.get_all_objects():
-                    self.coco_exporter.add_annotation(image_id, obj_id, mask)
+                    self.coco_exporter.add_annotation(image_id, obj_id + 1, mask)
 
         self.coco_exporter.update_file()
-        print(f"Exported COCO data for frame {self.current_frame_idx + 1}")
+        print(f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}")
 
     # COCO Loading
     # ----------------

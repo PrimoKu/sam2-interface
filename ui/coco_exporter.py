@@ -11,7 +11,7 @@ class COCOExporter:
             "annotations": [],
             "categories": []
         }
-        self.annotation_id = max([ann['id'] for ann in self.coco_data['annotations']], default=0) + 1
+        # self.annotation_id = max([ann['id'] for ann in self.coco_data['annotations']], default=0)
 
     def load_existing_data(self):
         if os.path.exists(self.output_file):
@@ -28,55 +28,63 @@ class COCOExporter:
         existing_categories = {cat['id']: cat for cat in self.coco_data['categories']}
         
         for category in categories:
-            if category['id'] in existing_categories:
-                existing_categories[category['id']]['name'] = category['name']
+            coco_category_id = category['id'] + 1
+            if coco_category_id in existing_categories:
+                existing_categories[coco_category_id]['name'] = category['name']
             else:
-                existing_categories[category['id']] = category
+                category['id'] = coco_category_id
+                existing_categories[coco_category_id] = category
         
         self.coco_data['categories'] = list(existing_categories.values())
 
+
     def add_image(self, frame_number, file_name, width, height):
+        coco_image_id = frame_number + 1
+        
         for image in self.coco_data['images']:
-            if image['id'] == frame_number:
-                return frame_number
+            if image['id'] == coco_image_id:
+                image.update({
+                    "file_name": file_name,
+                    "width": width,
+                    "height": height
+                })
+                return coco_image_id
         
         image_info = {
-            "id": frame_number,
+            "id": coco_image_id,
             "file_name": file_name,
             "width": width,
             "height": height
         }
         self.coco_data['images'].append(image_info)
-        return frame_number
+        return coco_image_id
 
     def add_annotation(self, image_id, category_id, mask):
-        for ann in self.coco_data['annotations']:
-            if ann['image_id'] == image_id and ann['category_id'] == category_id:
-                contours, bbox = self.get_contours_and_bbox(mask)
-                segmentation = self.contours_to_segmentation(contours)
-                area = float(mask.sum())
-                ann.update({
-                    "segmentation": segmentation,
-                    "area": area,
-                    "bbox": bbox,
-                })
-                return
-
+    
         contours, bbox = self.get_contours_and_bbox(mask)
         segmentation = self.contours_to_segmentation(contours)
         area = float(mask.sum())
 
-        annotation = {
-            "id": self.annotation_id,
-            "image_id": image_id,
-            "category_id": category_id,
-            "segmentation": segmentation,
-            "area": area,
-            "bbox": bbox,
-            "iscrowd": 0
-        }
-        self.coco_data['annotations'].append(annotation)
-        self.annotation_id += 1
+        existing_annotation = next((ann for ann in self.coco_data['annotations'] 
+                                    if ann['image_id'] == image_id and ann['category_id'] == category_id), None)
+        
+        if existing_annotation:
+            existing_annotation.update({
+                "segmentation": segmentation,
+                "area": area,
+                "bbox": bbox,
+            })
+        else:
+            annotation = {
+                "id": None,
+                "image_id": image_id,
+                "category_id": category_id,
+                "segmentation": segmentation,
+                "area": area,
+                "bbox": bbox,
+                "iscrowd": 0
+            }
+            self.coco_data['annotations'].append(annotation)
 
     @staticmethod
     def get_contours_and_bbox(mask):
@@ -96,9 +104,14 @@ class COCOExporter:
                 segmentation.append(contour)
         return segmentation
 
+    def regenerate_annotation_ids(self):
+        for idx, annotation in enumerate(self.coco_data['annotations'], start=1):
+            annotation['id'] = idx
+
     def save(self):
         with open(self.output_file, 'w') as f:
             json.dump(self.coco_data, f)
 
     def update_file(self):
+        self.regenerate_annotation_ids()
         self.save()
