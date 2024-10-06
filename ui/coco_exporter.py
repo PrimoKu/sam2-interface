@@ -105,6 +105,8 @@ class COCOExporter:
         return segmentation
 
     def regenerate_annotation_ids(self):
+        self.coco_data['annotations'].sort(key=lambda x: (x['image_id'], x['category_id']))
+
         for idx, annotation in enumerate(self.coco_data['annotations'], start=1):
             annotation['id'] = idx
 

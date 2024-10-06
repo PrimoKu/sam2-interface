@@ -64,12 +64,17 @@ class SAM2UI:
         self.prev_btn = create_button('Prev Frame', lambda: self.interface.navigate_frame('left'))
         self.next_btn = create_button('Next Frame', lambda: self.interface.navigate_frame('right'))
         nav_layout = create_horizontal_layout(self.prev_btn, self.next_btn)
+
+        self.load_curr_coco_btn = create_button('Load Current Frame COCO', self.interface.load_coco_for_current_frame)
+        self.save_curr_coco_btn = create_button('Save Current Frame COCO', self.interface.export_current_frame_to_coco)
+        curr_frame_layout = create_horizontal_layout(self.load_curr_coco_btn, self.save_curr_coco_btn)
         
         self.frame_info_label = QLabel()
         
         center_layout = QVBoxLayout()
         center_layout.addWidget(self.mpl_widget)
         center_layout.addLayout(nav_layout)
+        center_layout.addLayout(curr_frame_layout)
         center_layout.addWidget(self.frame_info_label)
         
         center_widget = QWidget()
@@ -109,6 +114,8 @@ class SAM2UI:
         self.export_btn.setEnabled(False)
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
+        self.load_curr_coco_btn.setEnabled(False)
+        self.save_curr_coco_btn.setEnabled(False)
         self.reset_btn.setEnabled(False)
         self.propagate_and_export_btn.setEnabled(False)
 
@@ -116,6 +123,7 @@ class SAM2UI:
         self.add_obj_btn.setEnabled(True)
         self.prev_btn.setEnabled(True)
         self.next_btn.setEnabled(True)
+        self.load_curr_coco_btn.setEnabled(True)
 
     def update_table(self):
         self.table.setRowCount(len(self.interface.object_manager.get_all_objects()))
@@ -239,8 +247,21 @@ class SAM2Interface:
             new_idx = self.current_frame_idx + 1
 
         if new_idx != self.current_frame_idx:
-            if self.coco_exporter:
-                self.export_current_frame_to_coco()
+            if direction == "right":
+                if any(self.masks):
+                    self.video_segments = self.sam2_predictor.propagate_masks(
+                        start_frame_idx=self.current_frame_idx,
+                        max_frame_num_to_track=2
+                    )
+                    self.masks_propagated = True
+                    self.ui.export_btn.setEnabled(True)
+                    self.ui.reset_btn.setEnabled(True)
+                    self.ui.save_curr_coco_btn.setEnabled(True)
+                    self.ui.add_obj_btn.setEnabled(False)
+                    self.ui.propagate_btn.setEnabled(False)
+                    self.ui.load_coco_btn.setEnabled(False)
+                    self.ui.set_delete_buttons_enabled(False)
+
             self.current_frame_idx = new_idx
             self.current_image = cv2.imread(os.path.join(self.video_dir, self.frame_names[self.current_frame_idx]))
             self.prompts = {}
@@ -299,6 +320,7 @@ class SAM2Interface:
         if not self.first_mask_created:
             self.first_mask_created = True
             self.ui.propagate_btn.setEnabled(True)
+            self.ui.save_curr_coco_btn.setEnabled(True)
             self.ui.propagate_and_export_btn.setEnabled(True)
 
     def update_mask(self):
@@ -388,6 +410,7 @@ class SAM2Interface:
         self.masks_propagated = True
         self.ui.export_btn.setEnabled(True)
         self.ui.reset_btn.setEnabled(True)
+        self.ui.save_curr_coco_btn.setEnabled(True)
         self.ui.add_obj_btn.setEnabled(False)
         self.ui.propagate_btn.setEnabled(False)
         self.ui.load_coco_btn.setEnabled(False)
@@ -447,13 +470,16 @@ class SAM2Interface:
     # COCO Export
     # -----------
     def initialize_coco_export(self):
+        if self.coco_exporter is not None:
+            return 
+        
         if not self.video_dir:
             QMessageBox.warning(self.window, "Warning", "Please load a video first.")
             return
 
-        if not self.masks_propagated:
-            QMessageBox.warning(self.window, "Warning", "Please propagate masks before starting COCO export.")
-            return
+        # if not self.masks_propagated:
+        #     QMessageBox.warning(self.window, "Warning", "Please propagate masks before starting COCO export.")
+        #     return
 
         if self.input_folder_name is None:
             QMessageBox.warning(self.window, "Warning", "Input folder name not recorded. Please reload the video.")
@@ -495,9 +521,10 @@ class SAM2Interface:
         self.ui.export_btn.setEnabled(False)
         QMessageBox.information(self.window, "COCO Export", f"COCO export initialized.\nData will be {'updated' if use_existing else 'written'} to {self.coco_export_file}")
 
+
     def export_current_frame_to_coco(self):
         if self.coco_exporter is None:
-            return
+            self.initialize_coco_export()
 
         image_id = self.coco_exporter.add_image(
             frame_number=self.current_frame_idx,
@@ -511,12 +538,23 @@ class SAM2Interface:
             if ann['image_id'] != image_id
         ]
 
-        if self.current_frame_idx in self.video_segments:
-            for obj_id, mask in self.video_segments[self.current_frame_idx].items():
-                if obj_id in self.object_manager.get_all_objects():
-                    self.coco_exporter.add_annotation(image_id, obj_id + 1, mask)
+        if self.current_frame_idx not in self.video_segments:
+            masks_to_export = self.masks
+        else:
+            masks_to_export = self.video_segments[self.current_frame_idx]
+
+        for obj_id, mask in masks_to_export.items():
+            if obj_id in self.object_manager.get_all_objects():
+                self.coco_exporter.add_annotation(image_id, obj_id + 1, mask)
 
         self.coco_exporter.update_file()
+
+        QMessageBox.information(
+            self.window,
+            "COCO Export Complete",
+            f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}\n\n"
+        )
+        
         print(f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}")
 
     def propagate_and_export_all(self):
@@ -624,6 +662,65 @@ class SAM2Interface:
 
         QMessageBox.information(self.window, "COCO Loading Complete", "COCO data loaded and masks are regenerated.\nMake sure the masks are correct before propagation.")
 
+    def load_coco_for_current_frame(self):
+        if not self.video_dir:
+            QMessageBox.warning(self.window, "Warning", "Please load a video first.")
+            return
+
+        coco_file = QFileDialog.getOpenFileName(self.window, "Select COCO JSON File", self.default_export_dir, "JSON files (*.json)")[0]
+        if not coco_file:
+            return
+
+        self.coco_export_file = coco_file
+        coco_data = self.load_coco_data(coco_file)
+        if not coco_data:
+            QMessageBox.warning(self.window, "Error", "Failed to load COCO data.")
+            return
+
+        current_frame_annotations = [ann for ann in coco_data['annotations'] if ann['image_id'] == self.current_frame_idx + 1]
+
+        if not current_frame_annotations:
+            QMessageBox.warning(self.window, "Warning", "No annotations found for the current frame.")
+            return
+
+        self.object_manager.clear()
+        self.masks.clear()
+        self.object_bboxes.clear()
+
+        for annotation in current_frame_annotations:
+            category_id = annotation['category_id']
+            obj_id = category_id - 1
+            bbox = annotation['bbox']
+            category_name = next((cat['name'] for cat in coco_data['categories'] if cat['id'] == category_id), f"Object {category_id}")
+            box = [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]
+
+            try:
+                mask = self.sam2_predictor.generate_mask_with_box(self.current_frame_idx, obj_id, box)
+                if mask is None:
+                    print(f"Failed to generate mask for object {obj_id}")
+                    continue
+                self.masks[obj_id] = mask
+                if self.current_frame_idx not in self.object_bboxes:
+                    self.object_bboxes[self.current_frame_idx] = {}
+                self.object_bboxes[self.current_frame_idx][obj_id] = box
+
+                color = get_object_color(obj_id)
+                self.object_manager.add_object(obj_id, category_name, color)
+            except Exception as e:
+                print(f"Error generating mask for object {obj_id}: {str(e)}")
+
+        self.update_display(self.current_image)
+        self.ui.update_table()
+        
+        self.ui.export_btn.setEnabled(True)
+        self.ui.save_curr_coco_btn.setEnabled(True)
+        self.ui.propagate_btn.setEnabled(True)
+        self.ui.propagate_and_export_btn.setEnabled(True)
+
+        QMessageBox.information(self.window, "COCO Loading Complete", 
+                                f"COCO data loaded for frame {self.current_frame_idx + 1}.\n"
+                                f"{len(current_frame_annotations)} annotations processed.")
+    
     def load_coco_data(self, coco_file):
         try:
             with open(coco_file, 'r') as f:
@@ -676,10 +773,12 @@ class SAM2Interface:
         self.ui.update_table()
         
         self.ui.export_btn.setEnabled(False)
+        self.ui.save_curr_coco_btn.setEnabled(False)
         self.ui.reset_btn.setEnabled(False)
         self.ui.add_obj_btn.setEnabled(True)
         self.ui.propagate_btn.setEnabled(True)
         self.ui.load_coco_btn.setEnabled(True)
+        self.ui.load_curr_coco_btn.setEnabled(True)
         self.ui.set_delete_buttons_enabled(True)
         self.ui.propagate_and_export_btn.setEnabled(True)
 
