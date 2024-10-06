@@ -248,7 +248,7 @@ class SAM2Interface:
 
         if new_idx != self.current_frame_idx:
             if direction == "right":
-                if any(self.masks):
+                if self.masks and any(np.any(mask) for mask in self.masks.values()):
                     self.video_segments = self.sam2_predictor.propagate_masks(
                         start_frame_idx=self.current_frame_idx,
                         max_frame_num_to_track=2
@@ -545,7 +545,8 @@ class SAM2Interface:
 
         for obj_id, mask in masks_to_export.items():
             if obj_id in self.object_manager.get_all_objects():
-                self.coco_exporter.add_annotation(image_id, obj_id + 1, mask)
+                if np.any(mask):
+                    self.coco_exporter.add_annotation(image_id, obj_id + 1, mask)
 
         self.coco_exporter.update_file()
 
@@ -773,7 +774,6 @@ class SAM2Interface:
         self.ui.update_table()
         
         self.ui.export_btn.setEnabled(False)
-        self.ui.save_curr_coco_btn.setEnabled(False)
         self.ui.reset_btn.setEnabled(False)
         self.ui.add_obj_btn.setEnabled(True)
         self.ui.propagate_btn.setEnabled(True)

@@ -60,6 +60,9 @@ class COCOExporter:
         return coco_image_id
 
     def add_annotation(self, image_id, category_id, mask):
+        
+        if not np.any(mask):
+            return
     
         contours, bbox = self.get_contours_and_bbox(mask)
         segmentation = self.contours_to_segmentation(contours)
