@@ -25,17 +25,18 @@ class COCOExporter:
             }
 
     def initialize_categories(self, categories):
-        existing_categories = {cat['id']: cat for cat in self.coco_data['categories']}
+        existing_categories = {cat['name']: cat for cat in self.coco_data['categories']}
         
+        updated_categories = []
         for category in categories:
-            coco_category_id = category['id'] + 1
-            if coco_category_id in existing_categories:
-                existing_categories[coco_category_id]['name'] = category['name']
+            if category['name'] in existing_categories:
+                updated_cat = existing_categories[category['name']]
+                updated_cat['id'] = category['id']
+                updated_categories.append(updated_cat)
             else:
-                category['id'] = coco_category_id
-                existing_categories[coco_category_id] = category
+                updated_categories.append(category)
         
-        self.coco_data['categories'] = list(existing_categories.values())
+        self.coco_data['categories'] = sorted(updated_categories, key=lambda x: x['id'])
 
 
     def add_image(self, frame_number, file_name, width, height):

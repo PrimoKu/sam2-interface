@@ -526,6 +526,10 @@ class SAM2Interface:
         if self.coco_exporter is None:
             self.initialize_coco_export()
 
+        categories = [{"id": obj_id + 1, "name": obj_data['category_name']} 
+                    for obj_id, obj_data in self.object_manager.get_all_objects().items()]
+        self.coco_exporter.initialize_categories(categories)
+
         image_id = self.coco_exporter.add_image(
             frame_number=self.current_frame_idx,
             file_name=self.frame_names[self.current_frame_idx],
