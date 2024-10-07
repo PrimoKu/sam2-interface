@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLayout,
                              QCheckBox, QStyledItemDelegate)
 from PyQt5.QtGui import QColor
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -34,6 +34,8 @@ def get_object_color(obj_id):
     return QColor(*[int(c * 255) for c in plt.cm.tab20(obj_id % 20)[:3]])
 
 class CenteredCheckBox(QWidget):
+    stateChanged = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
@@ -42,6 +44,8 @@ class CenteredCheckBox(QWidget):
         layout.setAlignment(Qt.AlignCenter)
         layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
+
+        self.checkbox.stateChanged.connect(self.stateChanged.emit)
 
     def isChecked(self):
         return self.checkbox.isChecked()

@@ -84,7 +84,7 @@ class SAM2UI:
 
     def create_right_panel(self):
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(['Re-segment', 'Category', 'Color', 'Delete'])
+        self.table.setHorizontalHeaderLabels(['Re-segment', 'Category', 'Color', 'Tracking'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setFixedWidth(300)
         self.table.itemChanged.connect(self.interface.on_category_name_change)
@@ -140,9 +140,14 @@ class SAM2UI:
             color_item.setBackground(QBrush(obj_data['color']))
             self.table.setItem(i, 2, color_item)
 
-            delete_btn = QPushButton("Delete")
-            delete_btn.clicked.connect(lambda _, x=obj_id: self.interface.delete_object(x))
-            self.table.setCellWidget(i, 3, delete_btn)
+            # delete_btn = QPushButton("Delete")
+            # delete_btn.clicked.connect(lambda _, x=obj_id: self.interface.delete_object(x))
+            # self.table.setCellWidget(i, 3, delete_btn)
+
+            tracking_checkbox = CenteredCheckBox()
+            tracking_checkbox.setChecked(obj_data['tracking'])
+            tracking_checkbox.stateChanged.connect(lambda state, x=obj_id: self.interface.on_tracking_changed(state, x))
+            self.table.setCellWidget(i, 3, tracking_checkbox)
 
         for row in range(self.table.rowCount()):
             self.table.setRowHeight(row, 30)
@@ -249,10 +254,21 @@ class SAM2Interface:
         if new_idx != self.current_frame_idx:
             if direction == "right":
                 if self.masks and any(np.any(mask) for mask in self.masks.values()):
+                    tracked_objects = self.object_manager.get_tracked_objects()
                     self.video_segments = self.sam2_predictor.propagate_masks(
                         start_frame_idx=self.current_frame_idx,
-                        max_frame_num_to_track=2
+                        max_frame_num_to_track=2,
+                        tracked_objects=tracked_objects
                     )
+                    
+                    non_tracked_objects = self.object_manager.get_non_tracked_objects()
+                    for obj_id in non_tracked_objects:
+                        current_mask = self.masks.get(obj_id)
+                        if current_mask is not None:
+                            if new_idx not in self.video_segments:
+                                self.video_segments[new_idx] = {}
+                            self.video_segments[new_idx][obj_id] = current_mask
+
                     self.masks_propagated = True
                     self.ui.export_btn.setEnabled(True)
                     self.ui.reset_btn.setEnabled(True)
@@ -269,7 +285,10 @@ class SAM2Interface:
             if self.current_frame_idx in self.video_segments:
                 self.masks.update(self.video_segments[self.current_frame_idx])
             else:
-                self.masks.clear()
+                tracked_objects = self.object_manager.get_tracked_objects()
+                for obj_id in tracked_objects:
+                    if obj_id in self.masks:
+                        del self.masks[obj_id]
             
             self.update_display(self.current_image)
     
@@ -352,7 +371,9 @@ class SAM2Interface:
         if len(out_mask_logits) > 0:
             return (out_mask_logits[obj_id] > 0.0).cpu().numpy()
         else:
-            return np.zeros((self.sam2_predictor.inference_state['height'], self.sam2_predictor.inference_state['width']), dtype=bool)
+            print(f"Warning: No mask generated for object {obj_id}. Using empty mask.")
+            height, width = self.current_image.shape[:2]
+            return np.zeros((height, width), dtype=bool)
 
     def update_click_prompts(self, object_id, x, y, click_type_val):
         if object_id not in self.prompts:
@@ -392,11 +413,23 @@ class SAM2Interface:
             QApplication.processEvents()
 
         try:
+            tracked_objects = self.object_manager.get_tracked_objects()
             self.video_segments = self.sam2_predictor.propagate_masks(
                 start_frame_idx=self.current_frame_idx,
                 max_frame_num_to_track=max_frame_num_to_track,
-                progress_callback=update_progress
+                progress_callback=update_progress,
+                tracked_objects=tracked_objects
             )
+
+            non_tracked_objects = self.object_manager.get_non_tracked_objects()
+            for obj_id in non_tracked_objects:
+                current_mask = self.masks.get(obj_id)
+                if current_mask is not None:
+                    for frame_idx in range(self.current_frame_idx, end_frame):
+                        if frame_idx not in self.video_segments:
+                            self.video_segments[frame_idx] = {}
+                        self.video_segments[frame_idx][obj_id] = current_mask
+
         except Exception as e:
             QMessageBox.critical(self.window, "Error", f"An error occurred during mask propagation: {str(e)}")
             progress.close()
@@ -451,6 +484,23 @@ class SAM2Interface:
             QMessageBox.information(self.window, "Object Selected", f"You can now edit Object {obj_id}")
         else:
             self.current_object_id = None
+
+    def on_tracking_changed(self, state, obj_id):
+        tracking = state == Qt.Checked
+        self.object_manager.set_tracking(obj_id, tracking)
+        print(f"Tracking for object {obj_id} set to: {tracking}")
+        
+        if not tracking and obj_id in self.masks:
+            self.object_manager.update_last_valid_mask(obj_id, self.masks[obj_id])
+        
+        if tracking:
+            bbox = self.object_bboxes.get(self.current_frame_idx, {}).get(obj_id)
+            if bbox is not None:
+                new_mask = self.sam2_predictor.generate_mask_with_box(self.current_frame_idx, obj_id, bbox)
+                self.masks[obj_id] = new_mask
+                self.object_manager.update_last_valid_mask(obj_id, new_mask)
+
+        self.update_display(self.current_image)
 
     def delete_object(self, obj_id):
         self.object_manager.remove_object(obj_id)
@@ -790,13 +840,34 @@ class SAM2Interface:
             QMessageBox.information(self.window, "Reset Complete", "Inference state has been reset.\nExisting masks are preserved. You can now edit objects or add new ones.")
             
     def reinitialize_masks(self, current_masks):
-        for obj_id, mask in current_masks.items():
+        non_tracked_data = {}
+        for obj_id, obj_data in self.object_manager.get_all_objects().items():
+            if not obj_data['tracking']:
+                non_tracked_data[obj_id] = {
+                    'mask': current_masks.get(obj_id),
+                    'bbox': self.object_bboxes.get(self.current_frame_idx, {}).get(obj_id)
+                }
+
+        self.sam2_predictor.reset_state()
+        new_masks = {}
+        for obj_id, obj_data in self.object_manager.get_all_objects().items():
             bbox = self.object_bboxes.get(self.current_frame_idx, {}).get(obj_id)
             if bbox is not None:
                 new_mask = self.sam2_predictor.generate_mask_with_box(self.current_frame_idx, obj_id, bbox)
-                self.masks[obj_id] = new_mask
+                new_masks[obj_id] = new_mask
             else:
-                self.masks[obj_id] = mask.cpu().numpy() if torch.is_tensor(mask) else mask
+                new_masks[obj_id] = current_masks.get(obj_id, np.zeros((self.current_image.shape[0], self.current_image.shape[1]), dtype=bool))
+
+        for obj_id, data in non_tracked_data.items():
+            if data['mask'] is not None:
+                new_masks[obj_id] = data['mask']
+            self.object_bboxes[self.current_frame_idx][obj_id] = data['bbox']
+
+        self.masks = new_masks
+        for obj_id, mask in self.masks.items():
+            self.object_manager.update_last_valid_mask(obj_id, mask)
+
+        print(f"Reinitialized masks for {len(self.masks)} objects")
 
 def run_interface():
     app = QApplication(sys.argv)

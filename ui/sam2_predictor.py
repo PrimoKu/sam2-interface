@@ -47,15 +47,16 @@ class SAM2Predictor:
         if progress_callback:
             progress_callback("Initialization complete.")
 
-    def propagate_masks(self, start_frame_idx=0, max_frame_num_to_track=None, progress_callback=None):
+    def propagate_masks(self, start_frame_idx=0, max_frame_num_to_track=None, progress_callback=None, tracked_objects=None):
         video_segments = {}
         frame_count = 0
         
         for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(self.inference_state, start_frame_idx=start_frame_idx, max_frame_num_to_track=max_frame_num_to_track):
-            video_segments[out_frame_idx] = {
-                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                for i, out_obj_id in enumerate(out_obj_ids)
-            }
+            video_segments[out_frame_idx] = {}
+            for i, out_obj_id in enumerate(out_obj_ids):
+                if tracked_objects is None or out_obj_id in tracked_objects:
+                    video_segments[out_frame_idx][out_obj_id] = (out_mask_logits[i] > 0.0).cpu().numpy()
+            
             if progress_callback:
                 progress_callback(frame_count)
             
