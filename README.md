@@ -2,8 +2,7 @@
 
 A powerful tool for semi-automated video segmentation and annotation built on Meta AI's Segment Anything Model 2 (SAM2).
 
-<!-- <video src="./demo/sam2_demo.mp4" controls="controls" muted="muted" style="max-width:100%;">
-</video> -->
+<img src="/demo/sam2_demo.gif"></img>
 
 ## Features
 
