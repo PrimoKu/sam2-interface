@@ -35,6 +35,15 @@ class SAM2UI:
         
         self.main_widget.setLayout(self.main_layout)
 
+        self.main_widget.setFocusPolicy(Qt.StrongFocus)
+        self.main_widget.keyPressEvent = self.keyPressEvent
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Right:
+            self.interface.navigate_frame('right')
+        elif event.key() == Qt.Key_Left:
+            self.interface.navigate_frame('left')
+
     def create_left_panel(self):
         self.load_btn = create_button('Load Video', self.interface.load_video_or_frames)
         self.load_coco_btn = create_button('Load COCO JSON', self.interface.load_coco_and_propagate)
@@ -183,6 +192,7 @@ class SAM2Interface:
     def run(self):
         self.window = QMainWindow()
         self.window.setCentralWidget(self.ui.main_widget)
+        self.window.setFocusPolicy(Qt.StrongFocus)
         self.window.show()
         self.ui.disable_all_buttons()
         self.ui.load_btn.setEnabled(True)
@@ -254,6 +264,8 @@ class SAM2Interface:
         if new_idx != self.current_frame_idx:
             if direction == "right":
                 if self.masks and any(np.any(mask) for mask in self.masks.values()):
+                    # self.export_current_frame_to_coco()
+
                     tracked_objects = self.object_manager.get_tracked_objects()
                     self.video_segments = self.sam2_predictor.propagate_masks(
                         start_frame_idx=self.current_frame_idx,
@@ -604,11 +616,11 @@ class SAM2Interface:
 
         self.coco_exporter.update_file()
 
-        QMessageBox.information(
-            self.window,
-            "COCO Export Complete",
-            f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}\n\n"
-        )
+        # QMessageBox.information(
+        #     self.window,
+        #     "COCO Export Complete",
+        #     f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}\n\n"
+        # )
         
         print(f"Exported/Updated COCO data for frame {self.current_frame_idx + 1}")
 
@@ -732,35 +744,38 @@ class SAM2Interface:
             QMessageBox.warning(self.window, "Error", "Failed to load COCO data.")
             return
 
-        current_frame_annotations = [ann for ann in coco_data['annotations'] if ann['image_id'] == self.current_frame_idx + 1]
-
-        if not current_frame_annotations:
-            QMessageBox.warning(self.window, "Warning", "No annotations found for the current frame.")
-            return
-
         self.object_manager.clear()
         self.masks.clear()
         self.object_bboxes.clear()
+
+        for category in coco_data['categories']:
+            category_id = category['id']
+            obj_id = category_id - 1
+            category_name = category['name']
+            color = get_object_color(obj_id)
+            self.object_manager.add_object(obj_id, category_name, color)
+
+        current_frame_annotations = [ann for ann in coco_data['annotations'] if ann['image_id'] == self.current_frame_idx + 1]
+        
+        height, width = self.current_image.shape[:2]
+        for obj_id in self.object_manager.get_all_objects():
+            self.masks[obj_id] = np.zeros((height, width), dtype=bool)
 
         for annotation in current_frame_annotations:
             category_id = annotation['category_id']
             obj_id = category_id - 1
             bbox = annotation['bbox']
-            category_name = next((cat['name'] for cat in coco_data['categories'] if cat['id'] == category_id), f"Object {category_id}")
             box = [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]]
 
             try:
                 mask = self.sam2_predictor.generate_mask_with_box(self.current_frame_idx, obj_id, box)
-                if mask is None:
+                if mask is not None:
+                    self.masks[obj_id] = mask
+                    if self.current_frame_idx not in self.object_bboxes:
+                        self.object_bboxes[self.current_frame_idx] = {}
+                    self.object_bboxes[self.current_frame_idx][obj_id] = box
+                else:
                     print(f"Failed to generate mask for object {obj_id}")
-                    continue
-                self.masks[obj_id] = mask
-                if self.current_frame_idx not in self.object_bboxes:
-                    self.object_bboxes[self.current_frame_idx] = {}
-                self.object_bboxes[self.current_frame_idx][obj_id] = box
-
-                color = get_object_color(obj_id)
-                self.object_manager.add_object(obj_id, category_name, color)
             except Exception as e:
                 print(f"Error generating mask for object {obj_id}: {str(e)}")
 
